@@ -21,7 +21,7 @@ return new class extends Migration
             $table->text('description')->nullable()->comment('Article description/summary from MediaStack API');
             $table->longText('content')->nullable()->comment('Full article content (may be limited by MediaStack)');
             $table->string('author', 255)->nullable()->comment('Article author name from MediaStack API');
-            $table->string('url', 2048)->unique()->comment('Original article URL - used as unique identifier');
+            $table->string('url', 191)->unique()->comment('Original article URL - used as unique identifier');
             $table->string('source', 100)->nullable()->comment('Source name from MediaStack API (e.g., CNN, BBC)');
             $table->string('image_url', 2048)->nullable()->comment('Featured image URL from MediaStack API');
             
