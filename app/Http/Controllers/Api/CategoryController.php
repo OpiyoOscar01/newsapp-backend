@@ -27,8 +27,8 @@ class CategoryController extends Controller
     ) {
         // Apply middleware for authorization
         
-        // Apply policies
-        $this->authorizeResource(Category::class, 'category');
+        // Only used with policies set up.
+        // $this->authorizeResource(Category::class, 'category');
     }
 
     /**

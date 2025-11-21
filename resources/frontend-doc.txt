@@ -1,0 +1,45 @@
+php artisan news:fetch --categories=technology,business --limit=50
+
+//Frontend endpoint.
+// Get latest news
+GET /api/v1/news/latest?limit=20
+
+// Get trending news
+GET /api/v1/news/trending?limit=10&timeframe=7
+
+// Get featured news
+GET /api/v1/news/featured?limit=5
+
+// Get news by category
+GET /api/v1/news/by-category/technology?per_page=15
+
+// Search news
+GET /api/v1/news/search?q=artificial intelligence&per_page=20
+
+// Get categorized news for homepage
+GET /api/v1/news/categorized?categories[]=technology&categories[]=business&limit_per_category=4
+
+// Get article details
+GET /api/v1/articles/123
+
+// Record article view
+POST /api/v1/articles/123/view
+
+// Get related articles
+GET /api/v1/articles/123/related?limit=6
+
+
+
+Admin API calls:
+Copy// Fetch fresh news from MediaStack
+POST /api/v1/mediastack/fetch
+{
+  "categories": "technology,business",
+  "limit": 100
+}
+
+// Test MediaStack connection
+POST /api/v1/mediastack/test-connection
+
+// Get usage statistics
+GET /api/v1/mediastack/usage-stats

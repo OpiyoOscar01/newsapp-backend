@@ -6,25 +6,30 @@ use App\Models\Article;
 use App\Repositories\Contracts\ArticleRepositoryInterface;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Pagination\LengthAwarePaginator;
+use Carbon\Carbon;
 
 class ArticleRepository implements ArticleRepositoryInterface
 {
     /**
-     * Get all articles
-     */
-    public function all(): Collection
-    {
-        return Article::orderBy('published_at', 'desc')->get();
-    }
-
-    /**
-     * Get paginated articles
+     * Get paginated articles with advanced filtering
      */
     public function paginate(int $perPage = 15, array $filters = []): LengthAwarePaginator
     {
-        $query = Article::active()->orderBy('published_at', 'desc');
+        $query = Article::active()
+            ->with(['sourceModel', 'categoryModel'])
+            ->orderBy('published_at', 'desc');
 
         // Apply filters
+        $this->applyFilters($query, $filters);
+
+        return $query->paginate($perPage);
+    }
+
+    /**
+     * Apply filters to query
+     */
+    private function applyFilters($query, array $filters): void
+    {
         if (!empty($filters['category'])) {
             $query->byCategory($filters['category']);
         }
@@ -49,106 +54,119 @@ class ArticleRepository implements ArticleRepositoryInterface
             $query->featured();
         }
 
-        return $query->paginate($perPage);
+        if (!empty($filters['date_from'])) {
+            $query->where('published_at', '>=', Carbon::parse($filters['date_from']));
+        }
+
+        if (!empty($filters['date_to'])) {
+            $query->where('published_at', '<=', Carbon::parse($filters['date_to'])->endOfDay());
+        }
+
+        if (!empty($filters['sort_by'])) {
+            $direction = $filters['sort_order'] ?? 'desc';
+            $query->orderBy($filters['sort_by'], $direction);
+        }
     }
 
     /**
-     * Find article by ID
+     * Get latest articles with optional filters
      */
+    public function getLatest(int $limit = 20, array $filters = []): Collection
+    {
+        $query = Article::active()
+            ->with(['sourceModel', 'categoryModel'])
+            ->orderBy('published_at', 'desc');
+
+        $this->applyFilters($query, $filters);
+
+        return $query->limit($limit)->get();
+    }
+
+    /**
+     * Get trending articles based on views and recency
+     */
+    public function getTrending(int $limit = 20, int $days = 7): Collection
+    {
+        return Article::active()
+            ->with(['sourceModel', 'categoryModel'])
+            ->where('published_at', '>=', Carbon::now()->subDays($days))
+            ->orderByRaw('(view_count * (1 / GREATEST(DATEDIFF(NOW(), published_at), 1))) DESC')
+            ->limit($limit)
+            ->get();
+    }
+
+    /**
+     * Get related articles using improved matching
+     */
+    public function getRelated(Article $article, int $limit = 5): Collection
+    {
+        return Article::active()
+            ->with(['sourceModel', 'categoryModel'])
+            ->where('id', '!=', $article->id)
+            ->where(function ($query) use ($article) {
+                $query->where('category', $article->category)
+                      ->orWhere('source', $article->source);
+            })
+            ->orderByRaw('
+                CASE 
+                    WHEN category = ? AND source = ? THEN 1
+                    WHEN category = ? THEN 2  
+                    WHEN source = ? THEN 3
+                    ELSE 4
+                END, published_at DESC
+            ', [$article->category, $article->source, $article->category, $article->source])
+            ->limit($limit)
+            ->get();
+    }
+
+    // ... other repository methods remain the same
+    
     public function find(int $id): ?Article
     {
-        return Article::find($id);
+        return Article::with(['sourceModel', 'categoryModel'])->find($id);
     }
 
-    /**
-     * Find article by slug
-     */
     public function findBySlug(string $slug): ?Article
     {
-        return Article::where('slug', $slug)->first();
+        return Article::with(['sourceModel', 'categoryModel'])
+            ->where('slug', $slug)
+            ->first();
     }
 
-    /**
-     * Find article by URL
-     */
     public function findByUrl(string $url): ?Article
     {
         return Article::where('url', $url)->first();
     }
 
-    /**
-     * Create new article
-     */
     public function create(array $data): Article
     {
         return Article::create($data);
     }
 
-    /**
-     * Update article
-     */
     public function update(Article $article, array $data): bool
     {
         return $article->update($data);
     }
 
-    /**
-     * Delete article
-     */
     public function delete(Article $article): bool
     {
         return $article->delete();
     }
 
-    /**
-     * Get active articles
-     */
-    public function getActive(): Collection
-    {
-        return Article::active()->orderBy('published_at', 'desc')->get();
-    }
-
-    /**
-     * Get featured articles
-     */
     public function getFeatured(int $limit = 10): Collection
     {
         return Article::active()
+            ->with(['sourceModel', 'categoryModel'])
             ->featured()
             ->orderBy('published_at', 'desc')
             ->limit($limit)
             ->get();
     }
 
-    /**
-     * Get latest articles
-     */
-    public function getLatest(int $limit = 20): Collection
-    {
-        return Article::active()
-            ->orderBy('published_at', 'desc')
-            ->limit($limit)
-            ->get();
-    }
-
-    /**
-     * Get trending articles
-     */
-    public function getTrending(int $limit = 20): Collection
-    {
-        return Article::active()
-            ->recent(7)
-            ->popular()
-            ->limit($limit)
-            ->get();
-    }
-
-    /**
-     * Get articles by category
-     */
-    public function byCategory(string $category, int $limit = null): Collection
+    public function byCategory(string $category, ?int $limit = null): Collection
     {
         $query = Article::active()
+            ->with(['sourceModel', 'categoryModel'])
             ->byCategory($category)
             ->orderBy('published_at', 'desc');
 
@@ -159,12 +177,10 @@ class ArticleRepository implements ArticleRepositoryInterface
         return $query->get();
     }
 
-    /**
-     * Get articles by source
-     */
-    public function bySource(string $source, int $limit = null): Collection
+    public function bySource(string $source, ?int $limit = null): Collection
     {
         $query = Article::active()
+            ->with(['sourceModel', 'categoryModel'])
             ->bySource($source)
             ->orderBy('published_at', 'desc');
 
@@ -175,62 +191,50 @@ class ArticleRepository implements ArticleRepositoryInterface
         return $query->get();
     }
 
-    /**
-     * Search articles
-     */
     public function search(string $term): Collection
     {
         return Article::active()
+            ->with(['sourceModel', 'categoryModel'])
             ->search($term)
             ->orderBy('published_at', 'desc')
             ->get();
     }
 
-    /**
-     * Get related articles
-     */
-    public function getRelated(Article $article, int $limit = 5): Collection
-    {
-        return Article::active()
-            ->where('id', '!=', $article->id)
-            ->where(function ($query) use ($article) {
-                $query->where('category', $article->category)
-                      ->orWhere('source', $article->source);
-            })
-            ->orderBy('published_at', 'desc')
-            ->limit($limit)
-            ->get();
-    }
-
-    /**
-     * Feature article
-     */
     public function feature(Article $article): bool
     {
-        return $article->feature();
+        return $article->update(['is_featured' => true]);
     }
 
-    /**
-     * Unfeature article
-     */
     public function unfeature(Article $article): bool
     {
-        return $article->unfeature();
+        return $article->update(['is_featured' => false]);
     }
 
-    /**
-     * Activate article
-     */
     public function activate(Article $article): bool
     {
-        return $article->activate();
+        return $article->update(['is_active' => true]);
+    }
+
+    public function deactivate(Article $article): bool
+    {
+        return $article->update(['is_active' => false]);
     }
 
     /**
-     * Deactivate article
+     * Get all articles
      */
-    public function deactivate(Article $article): bool
+    public function all(): Collection
     {
-        return $article->deactivate();
+        return Article::with(['sourceModel', 'categoryModel'])->get();
+    }
+
+    /**
+     * Get all active articles
+     */
+    public function getActive(): Collection
+    {
+        return Article::active()
+            ->with(['sourceModel', 'categoryModel'])
+            ->get();
     }
 }

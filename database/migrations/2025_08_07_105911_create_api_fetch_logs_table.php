@@ -12,8 +12,8 @@ return new class extends Migration
             $table->id();
             
             // API call information
-            $table->string('endpoint', 100)->comment('MediaStack API endpoint called (e.g., news, sources)');
-            $table->json('parameters')->comment('JSON of parameters sent to the API');
+            $table->string('endpoint', 100)->nullable(true)->comment('MediaStack API endpoint called (e.g., news, sources)');
+            $table->json('parameters')->nullable(true)->comment('JSON of parameters sent to the API');
             $table->string('request_type', 50)->default('scheduled')->comment('Type of request: scheduled, manual, retry');
             
             // Response information
@@ -24,12 +24,12 @@ return new class extends Migration
             $table->integer('duplicate_articles')->default(0)->comment('Number of duplicate articles skipped');
             
             // Performance metrics
-            $table->integer('execution_time_ms')->comment('Total execution time in milliseconds');
+            $table->integer('execution_time_ms')->nullable(true)->comment('Total execution time in milliseconds');
             $table->integer('api_response_time_ms')->nullable()->comment('API response time in milliseconds');
             $table->integer('db_processing_time_ms')->nullable()->comment('Database processing time in milliseconds');
             
             // Status and error handling
-            $table->enum('status', ['success', 'partial_success', 'failed', 'rate_limited'])
+            $table->enum('status', ['running','success', 'partial_success', 'failed', 'rate_limited'])
                   ->comment('Overall status of the fetch operation');
             $table->text('error_message')->nullable()->comment('Error message if fetch failed');
             $table->json('error_details')->nullable()->comment('Detailed error information');

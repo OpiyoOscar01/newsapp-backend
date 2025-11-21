@@ -4,30 +4,22 @@ namespace App\Services;
 
 use App\Models\Article;
 use App\Repositories\Contracts\ArticleRepositoryInterface;
-use App\Services\ImageCacheService;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Str;
+use Carbon\Carbon;
 
-/**
- * Article Service
- * 
- * Handles business logic for articles
- */
 class ArticleService
 {
-    /**
-     * Create a new service instance.
-     */
     public function __construct(
-        private ArticleRepositoryInterface $articleRepository,
-        // private ImageCacheService $imageCacheService
+        private ArticleRepositoryInterface $articleRepository
     ) {}
 
     /**
-     * Get paginated articles
+     * Get paginated articles with enhanced filtering
      */
     public function getPaginated(int $perPage = 15, array $filters = []): LengthAwarePaginator
     {
@@ -39,7 +31,11 @@ class ArticleService
      */
     public function findById(int $id): ?Article
     {
-        return $this->articleRepository->find($id);
+        return Cache::remember(
+            "article.{$id}",
+            now()->addMinutes(30),
+            fn() => $this->articleRepository->find($id)
+        );
     }
 
     /**
@@ -47,7 +43,11 @@ class ArticleService
      */
     public function findBySlug(string $slug): ?Article
     {
-        return $this->articleRepository->findBySlug($slug);
+        return Cache::remember(
+            "article.slug.{$slug}",
+            now()->addMinutes(30),
+            fn() => $this->articleRepository->findBySlug($slug)
+        );
     }
 
     /**
@@ -64,14 +64,8 @@ class ArticleService
             // Create article
             $article = $this->articleRepository->create($data);
 
-            // Queue image caching if image URL provided
-            if (!empty($data['image_url'])) {
-                // Dispatch job to cache image
-                // CacheArticleImages::dispatch($article);
-            }
-
-            // Queue keyword extraction
-            // ProcessArticleKeywords::dispatch($article);
+            // Clear cache
+            $this->clearRelatedCache();
 
             return $article;
         });
@@ -90,6 +84,10 @@ class ArticleService
 
             $this->articleRepository->update($article, $data);
 
+            // Clear cache
+            $this->clearArticleCache($article);
+            $this->clearRelatedCache();
+
             return $article->fresh();
         });
     }
@@ -100,21 +98,28 @@ class ArticleService
     public function delete(Article $article): bool
     {
         return DB::transaction(function () use ($article) {
-            // Delete cached image if exists
-            if ($article->cached_image_path) {
-                // $this->imageCacheService->delete($article->cached_image_path);
-            }
+            $result = $this->articleRepository->delete($article);
+            
+            // Clear cache
+            $this->clearArticleCache($article);
+            $this->clearRelatedCache();
 
-            return $this->articleRepository->delete($article);
+            return $result;
         });
     }
 
     /**
-     * Get latest articles
+     * Get latest articles with caching
      */
-    public function getLatest(int $limit = 20): Collection
+    public function getLatest(int $limit = 20, array $filters = []): Collection
     {
-        return $this->articleRepository->getLatest($limit);
+        $cacheKey = 'articles.latest.' . md5(serialize($filters)) . ".{$limit}";
+        
+        return Cache::remember(
+            $cacheKey,
+            now()->addMinutes(15),
+            fn() => $this->articleRepository->getLatest($limit)
+        );
     }
 
     /**
@@ -122,31 +127,51 @@ class ArticleService
      */
     public function getFeatured(int $limit = 10): Collection
     {
-        return $this->articleRepository->getFeatured($limit);
+        return Cache::remember(
+            "articles.featured.{$limit}",
+            now()->addMinutes(30),
+            fn() => $this->articleRepository->getFeatured($limit)
+        );
     }
 
     /**
      * Get trending articles
      */
-    public function getTrending(int $limit = 20): Collection
+    public function getTrending(int $limit = 20, int $days = 7): Collection
     {
-        return $this->articleRepository->getTrending($limit);
+        return Cache::remember(
+            "articles.trending.{$limit}.{$days}",
+            now()->addMinutes(20),
+            fn() => $this->articleRepository->getTrending($limit)
+        );
     }
 
     /**
      * Get articles by category
      */
-    public function getByCategory(string $category, int $limit = null): Collection
+    public function getByCategory(string $category, ?int $limit): Collection
     {
-        return $this->articleRepository->byCategory($category, $limit);
+        $cacheKey = "articles.category.{$category}" . ($limit ? ".{$limit}" : '');
+        
+        return Cache::remember(
+            $cacheKey,
+            now()->addMinutes(20),
+            fn() => $this->articleRepository->byCategory($category, $limit)
+        );
     }
 
     /**
      * Get articles by source
      */
-    public function getBySource(string $source, int $limit = null): Collection
+    public function getBySource(string $source, ?int $limit): Collection
     {
-        return $this->articleRepository->bySource($source, $limit);
+        $cacheKey = "articles.source.{$source}" . ($limit ? ".{$limit}" : '');
+        
+        return Cache::remember(
+            $cacheKey,
+            now()->addMinutes(20),
+            fn() => $this->articleRepository->bySource($source, $limit)
+        );
     }
 
     /**
@@ -158,11 +183,15 @@ class ArticleService
     }
 
     /**
-     * Get related articles
+     * Get related articles with improved algorithm
      */
     public function getRelated(Article $article, int $limit = 5): Collection
     {
-        return $this->articleRepository->getRelated($article, $limit);
+        return Cache::remember(
+            "article.{$article->id}.related.{$limit}",
+            now()->addHour(),
+            fn() => $this->articleRepository->getRelated($article, $limit)
+        );
     }
 
     /**
@@ -171,6 +200,8 @@ class ArticleService
     public function feature(Article $article): Article
     {
         $this->articleRepository->feature($article);
+        $this->clearArticleCache($article);
+        Cache::forget('articles.featured.10');
         return $article->fresh();
     }
 
@@ -180,6 +211,8 @@ class ArticleService
     public function unfeature(Article $article): Article
     {
         $this->articleRepository->unfeature($article);
+        $this->clearArticleCache($article);
+        Cache::forget('articles.featured.10');
         return $article->fresh();
     }
 
@@ -189,6 +222,8 @@ class ArticleService
     public function activate(Article $article): Article
     {
         $this->articleRepository->activate($article);
+        $this->clearArticleCache($article);
+        $this->clearRelatedCache();
         return $article->fresh();
     }
 
@@ -198,16 +233,23 @@ class ArticleService
     public function deactivate(Article $article): Article
     {
         $this->articleRepository->deactivate($article);
+        $this->clearArticleCache($article);
+        $this->clearRelatedCache();
         return $article->fresh();
     }
 
     /**
-     * Record article view
+     * Record article view with enhanced analytics
      */
     public function recordView(Article $article, array $data = []): void
     {
-        // Increment view count
-        $article->incrementViewCount();
+        // Increment view count (with rate limiting per session)
+        $sessionKey = "article_view_{$article->id}_" . session()->getId();
+        
+        if (!Cache::has($sessionKey)) {
+            $article->incrementViewCount();
+            Cache::put($sessionKey, true, now()->addMinutes(30));
+        }
 
         // Create interaction record
         $article->interactions()->create([
@@ -216,10 +258,16 @@ class ArticleService
             'session_id' => session()->getId(),
             'ip_address' => request()->ip(),
             'user_agent' => request()->userAgent(),
-            'referrer' => request()->header('referer'),
-            'metadata' => $data,
+            'referrer' => $data['referrer'] ?? request()->header('referer'),
+            'metadata' => array_merge($data, [
+                'timestamp' => now()->toISOString(),
+                'page_url' => request()->fullUrl(),
+            ]),
             'interaction_date' => now(),
         ]);
+
+        // Clear trending cache as views affect trending
+        Cache::forget('articles.trending.20.7');
     }
 
     /**
@@ -247,5 +295,25 @@ class ArticleService
         }
 
         return $slug;
+    }
+
+    /**
+     * Clear article-specific cache
+     */
+    private function clearArticleCache(Article $article): void
+    {
+        Cache::forget("article.{$article->id}");
+        Cache::forget("article.slug.{$article->slug}");
+        Cache::forget("article.{$article->id}.related.5");
+    }
+
+    /**
+     * Clear related cache entries
+     */
+    private function clearRelatedCache(): void
+    {
+        Cache::forget('articles.latest.20');
+        Cache::forget('articles.trending.20.7');
+        // Add more cache keys as needed
     }
 }

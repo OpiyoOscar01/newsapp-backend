@@ -1,0 +1,869 @@
+<!-- <?php
+
+namespace App\Http\Controllers\Api;
+
+use App\Http\Controllers\Controller;
+use App\Http\Requests\CreateArticleRequest;
+use App\Http\Requests\UpdateArticleRequest;
+use App\Http\Resources\ArticleResource;
+use App\Http\Resources\ArticleCollection;
+use App\Http\Traits\ApiResponseTrait;
+use App\Services\ArticleService;
+use App\Models\Article;
+use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
+use Illuminate\Foundation\Auth\Access\AuthorizesRequests;
+
+class ArticleController extends Controller
+{
+    use AuthorizesRequests;
+    use ApiResponseTrait;
+
+    /**
+     * Create a new controller instance.
+     */
+    public function __construct(
+        private ArticleService $articleService
+    ) {
+        $this->authorizeResource(Article::class, 'article');
+    }
+
+    /**
+     * Display a listing of articles.
+     */
+    public function index(Request $request): JsonResponse
+    {
+        try {
+            $filters = $request->only([
+                'category', 'source', 'country', 'language', 
+                'search', 'featured', 'is_active'
+            ]);
+            $perPage = $request->get('per_page', 15);
+
+            $articles = $this->articleService->getPaginated($perPage, $filters);
+
+            return $this->successResponse(
+                new ArticleCollection($articles),
+                'Articles retrieved successfully'
+            );
+        } catch (\Exception $e) {
+            return $this->errorResponse(
+                'Failed to retrieve articles',
+                500,
+                $e->getMessage()
+            );
+        }
+    }
+
+    /**
+     * Store a newly created article.
+     */
+    public function store(CreateArticleRequest $request): JsonResponse
+    {
+        try {
+            $article = $this->articleService->create($request->validated());
+
+            return $this->successResponse(
+                new ArticleResource($article),
+                'Article created successfully',
+                201
+            );
+        } catch (\Exception $e) {
+            return $this->errorResponse(
+                'Failed to create article',
+                500,
+                $e->getMessage()
+            );
+        }
+    }
+
+    /**
+     * Display the specified article.
+     */
+    public function show(Article $article): JsonResponse
+    {
+        try {
+            // Load relationships for detailed view
+            $article->load(['categoryModel', 'sourceModel', 'articleKeywords']);
+            
+            return $this->successResponse(
+                new ArticleResource($article),
+                'Article retrieved successfully'
+            );
+        } catch (\Exception $e) {
+            return $this->errorResponse(
+                'Article not found',
+                404,
+                $e->getMessage()
+            );
+        }
+    }
+
+    /**
+     * Update the specified article.
+     */
+    public function update(UpdateArticleRequest $request, Article $article): JsonResponse
+    {
+        try {
+            $updatedArticle = $this->articleService->update($article, $request->validated());
+
+            return $this->successResponse(
+                new ArticleResource($updatedArticle),
+                'Article updated successfully'
+            );
+        } catch (\Exception $e) {
+            return $this->errorResponse(
+                'Failed to update article',
+                500,
+                $e->getMessage()
+            );
+        }
+    }
+
+    /**
+     * Remove the specified article.
+     */
+    public function destroy(Article $article): JsonResponse
+    {
+        try {
+            $this->articleService->delete($article);
+
+            return $this->successResponse(
+                null,
+                'Article deleted successfully'
+            );
+        } catch (\Exception $e) {
+            return $this->errorResponse(
+                'Failed to delete article',
+                500,
+                $e->getMessage()
+            );
+        }
+    }
+
+    /**
+     * Feature the specified article.
+     */
+    public function feature(Article $article): JsonResponse
+    {
+        try {
+            $this->authorize('update', $article);
+            
+            $updatedArticle = $this->articleService->feature($article);
+
+            return $this->successResponse(
+                new ArticleResource($updatedArticle),
+                'Article featured successfully'
+            );
+        } catch (\Exception $e) {
+            return $this->errorResponse(
+                'Failed to feature article',
+                500,
+                $e->getMessage()
+            );
+        }
+    }
+
+    /**
+     * Unfeature the specified article.
+     */
+    public function unfeature(Article $article): JsonResponse
+    {
+        try {
+            $this->authorize('update', $article);
+            
+            $updatedArticle = $this->articleService->unfeature($article);
+
+            return $this->successResponse(
+                new ArticleResource($updatedArticle),
+                'Article unfeatured successfully'
+            );
+        } catch (\Exception $e) {
+            return $this->errorResponse(
+                'Failed to unfeature article',
+                500,
+                $e->getMessage()
+            );
+        }
+    }
+
+    /**
+     * Activate the specified article.
+     */
+    public function activate(Article $article): JsonResponse
+    {
+        try {
+            $this->authorize('update', $article);
+            
+            $updatedArticle = $this->articleService->activate($article);
+
+            return $this->successResponse(
+                new ArticleResource($updatedArticle),
+                'Article activated successfully'
+            );
+        } catch (\Exception $e) {
+            return $this->errorResponse(
+                'Failed to activate article',
+                500,
+                $e->getMessage()
+            );
+        }
+    }
+
+    /**
+     * Deactivate the specified article.
+     */
+    public function deactivate(Article $article): JsonResponse
+    {
+        try {
+            $this->authorize('update', $article);
+            
+            $updatedArticle = $this->articleService->deactivate($article);
+
+            return $this->successResponse(
+                new ArticleResource($updatedArticle),
+                'Article deactivated successfully'
+            );
+        } catch (\Exception $e) {
+            return $this->errorResponse(
+                'Failed to deactivate article',
+                500,
+                $e->getMessage()
+            );
+        }
+    }
+
+    /**
+     * Record article view.
+     */
+    public function recordView(Request $request, Article $article): JsonResponse
+    {
+        try {
+            $this->articleService->recordView($article, $request->all());
+
+            return $this->successResponse(
+                ['view_count' => $article->fresh()->view_count],
+                'View recorded successfully'
+            );
+        } catch (\Exception $e) {
+            return $this->errorResponse(
+                'Failed to record view',
+                500,
+                $e->getMessage()
+            );
+        }
+    }
+
+    /**
+     * Get related articles.
+     */
+    public function related(Article $article): JsonResponse
+    {
+        try {
+            $relatedArticles = $this->articleService->getRelated($article);
+
+            return $this->successResponse(
+                ArticleResource::collection($relatedArticles),
+                'Related articles retrieved successfully'
+            );
+        } catch (\Exception $e) {
+            return $this->errorResponse(
+                'Failed to retrieve related articles',
+                500,
+                $e->getMessage()
+            );
+        }
+    }
+} 
+
+
+<?php
+
+namespace App\Services;
+
+use App\Models\Article;
+use App\Repositories\Contracts\ArticleRepositoryInterface;
+use App\Services\ImageCacheService;
+use Illuminate\Database\Eloquent\Collection;
+use Illuminate\Pagination\LengthAwarePaginator;
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
+
+/**
+ * Article Service
+ * 
+ * Handles business logic for articles
+ */
+class ArticleService
+{
+    /**
+     * Create a new service instance.
+     */
+    public function __construct(
+        private ArticleRepositoryInterface $articleRepository,
+        // private ImageCacheService $imageCacheService
+    ) {}
+
+    /**
+     * Get paginated articles
+     */
+    public function getPaginated(int $perPage = 15, array $filters = []): LengthAwarePaginator
+    {
+        return $this->articleRepository->paginate($perPage, $filters);
+    }
+
+    /**
+     * Find article by ID
+     */
+    public function findById(int $id): ?Article
+    {
+        return $this->articleRepository->find($id);
+    }
+
+    /**
+     * Find article by slug
+     */
+    public function findBySlug(string $slug): ?Article
+    {
+        return $this->articleRepository->findBySlug($slug);
+    }
+
+    /**
+     * Create new article
+     */
+    public function create(array $data): Article
+    {
+        return DB::transaction(function () use ($data) {
+            // Generate slug if not provided
+            if (empty($data['slug'])) {
+                $data['slug'] = $this->generateUniqueSlug($data['title']);
+            }
+
+            // Create article
+            $article = $this->articleRepository->create($data);
+
+            // Queue image caching if image URL provided
+            if (!empty($data['image_url'])) {
+                // Dispatch job to cache image
+                // CacheArticleImages::dispatch($article);
+            }
+
+            // Queue keyword extraction
+            // ProcessArticleKeywords::dispatch($article);
+
+            return $article;
+        });
+    }
+
+    /**
+     * Update article
+     */
+    public function update(Article $article, array $data): Article
+    {
+        return DB::transaction(function () use ($article, $data) {
+            // Update slug if title changed and slug not provided
+            if (isset($data['title']) && !isset($data['slug'])) {
+                $data['slug'] = $this->generateUniqueSlug($data['title'], $article->id);
+            }
+
+            $this->articleRepository->update($article, $data);
+
+            return $article->fresh();
+        });
+    }
+
+    /**
+     * Delete article
+     */
+    public function delete(Article $article): bool
+    {
+        return DB::transaction(function () use ($article) {
+            // Delete cached image if exists
+            if ($article->cached_image_path) {
+                // $this->imageCacheService->delete($article->cached_image_path);
+            }
+
+            return $this->articleRepository->delete($article);
+        });
+    }
+
+    /**
+     * Get latest articles
+     */
+    public function getLatest(int $limit = 20): Collection
+    {
+        return $this->articleRepository->getLatest($limit);
+    }
+
+    /**
+     * Get featured articles
+     */
+    public function getFeatured(int $limit = 10): Collection
+    {
+        return $this->articleRepository->getFeatured($limit);
+    }
+
+    /**
+     * Get trending articles
+     */
+    public function getTrending(int $limit = 20): Collection
+    {
+        return $this->articleRepository->getTrending($limit);
+    }
+
+    /**
+     * Get articles by category
+     */
+    public function getByCategory(string $category, int $limit = null): Collection
+    {
+        return $this->articleRepository->byCategory($category, $limit);
+    }
+
+    /**
+     * Get articles by source
+     */
+    public function getBySource(string $source, int $limit = null): Collection
+    {
+        return $this->articleRepository->bySource($source, $limit);
+    }
+
+    /**
+     * Search articles
+     */
+    public function search(string $term): Collection
+    {
+        return $this->articleRepository->search($term);
+    }
+
+    /**
+     * Get related articles
+     */
+    public function getRelated(Article $article, int $limit = 5): Collection
+    {
+        return $this->articleRepository->getRelated($article, $limit);
+    }
+
+    /**
+     * Feature article
+     */
+    public function feature(Article $article): Article
+    {
+        $this->articleRepository->feature($article);
+        return $article->fresh();
+    }
+
+    /**
+     * Unfeature article
+     */
+    public function unfeature(Article $article): Article
+    {
+        $this->articleRepository->unfeature($article);
+        return $article->fresh();
+    }
+
+    /**
+     * Activate article
+     */
+    public function activate(Article $article): Article
+    {
+        $this->articleRepository->activate($article);
+        return $article->fresh();
+    }
+
+    /**
+     * Deactivate article
+     */
+    public function deactivate(Article $article): Article
+    {
+        $this->articleRepository->deactivate($article);
+        return $article->fresh();
+    }
+
+    /**
+     * Record article view
+     */
+    public function recordView(Article $article, array $data = []): void
+    {
+        // Increment view count
+        $article->incrementViewCount();
+
+        // Create interaction record
+        $article->interactions()->create([
+            'interaction_type' => 'view',
+            'user_id' => Auth::id(),
+            'session_id' => session()->getId(),
+            'ip_address' => request()->ip(),
+            'user_agent' => request()->userAgent(),
+            'referrer' => request()->header('referer'),
+            'metadata' => $data,
+            'interaction_date' => now(),
+        ]);
+    }
+
+    /**
+     * Generate unique slug
+     */
+    private function generateUniqueSlug(string $title, ?int $excludeId = null): string
+    {
+        $slug = Str::slug($title);
+        $originalSlug = $slug;
+        $counter = 1;
+
+        while (true) {
+            $query = Article::where('slug', $slug);
+            
+            if ($excludeId) {
+                $query->where('id', '!=', $excludeId);
+            }
+
+            if (!$query->exists()) {
+                break;
+            }
+
+            $slug = $originalSlug . '-' . $counter;
+            $counter++;
+        }
+
+        return $slug;
+    }
+}
+
+
+
+<?php
+
+namespace App\Repositories;
+
+use App\Models\Article;
+use App\Repositories\Contracts\ArticleRepositoryInterface;
+use Illuminate\Database\Eloquent\Collection;
+use Illuminate\Pagination\LengthAwarePaginator;
+
+class ArticleRepository implements ArticleRepositoryInterface
+{
+    /**
+     * Get all articles
+     */
+    public function all(): Collection
+    {
+        return Article::orderBy('published_at', 'desc')->get();
+    }
+
+    /**
+     * Get paginated articles
+     */
+    public function paginate(int $perPage = 15, array $filters = []): LengthAwarePaginator
+    {
+        $query = Article::active()->orderBy('published_at', 'desc');
+
+        // Apply filters
+        if (!empty($filters['category'])) {
+            $query->byCategory($filters['category']);
+        }
+
+        if (!empty($filters['source'])) {
+            $query->bySource($filters['source']);
+        }
+
+        if (!empty($filters['country'])) {
+            $query->where('country', $filters['country']);
+        }
+
+        if (!empty($filters['language'])) {
+            $query->where('language', $filters['language']);
+        }
+
+        if (!empty($filters['search'])) {
+            $query->search($filters['search']);
+        }
+
+        if (!empty($filters['featured'])) {
+            $query->featured();
+        }
+
+        return $query->paginate($perPage);
+    }
+
+    /**
+     * Find article by ID
+     */
+    public function find(int $id): ?Article
+    {
+        return Article::find($id);
+    }
+
+    /**
+     * Find article by slug
+     */
+    public function findBySlug(string $slug): ?Article
+    {
+        return Article::where('slug', $slug)->first();
+    }
+
+    /**
+     * Find article by URL
+     */
+    public function findByUrl(string $url): ?Article
+    {
+        return Article::where('url', $url)->first();
+    }
+
+    /**
+     * Create new article
+     */
+    public function create(array $data): Article
+    {
+        return Article::create($data);
+    }
+
+    /**
+     * Update article
+     */
+    public function update(Article $article, array $data): bool
+    {
+        return $article->update($data);
+    }
+
+    /**
+     * Delete article
+     */
+    public function delete(Article $article): bool
+    {
+        return $article->delete();
+    }
+
+    /**
+     * Get active articles
+     */
+    public function getActive(): Collection
+    {
+        return Article::active()->orderBy('published_at', 'desc')->get();
+    }
+
+    /**
+     * Get featured articles
+     */
+    public function getFeatured(int $limit = 10): Collection
+    {
+        return Article::active()
+            ->featured()
+            ->orderBy('published_at', 'desc')
+            ->limit($limit)
+            ->get();
+    }
+
+    /**
+     * Get latest articles
+     */
+    public function getLatest(int $limit = 20): Collection
+    {
+        return Article::active()
+            ->orderBy('published_at', 'desc')
+            ->limit($limit)
+            ->get();
+    }
+
+    /**
+     * Get trending articles
+     */
+    public function getTrending(int $limit = 20): Collection
+    {
+        return Article::active()
+            ->recent(7)
+            ->popular()
+            ->limit($limit)
+            ->get();
+    }
+
+    /**
+     * Get articles by category
+     */
+    public function byCategory(string $category, int $limit = null): Collection
+    {
+        $query = Article::active()
+            ->byCategory($category)
+            ->orderBy('published_at', 'desc');
+
+        if ($limit) {
+            $query->limit($limit);
+        }
+
+        return $query->get();
+    }
+
+    /**
+     * Get articles by source
+     */
+    public function bySource(string $source, int $limit = null): Collection
+    {
+        $query = Article::active()
+            ->bySource($source)
+            ->orderBy('published_at', 'desc');
+
+        if ($limit) {
+            $query->limit($limit);
+        }
+
+        return $query->get();
+    }
+
+    /**
+     * Search articles
+     */
+    public function search(string $term): Collection
+    {
+        return Article::active()
+            ->search($term)
+            ->orderBy('published_at', 'desc')
+            ->get();
+    }
+
+    /**
+     * Get related articles
+     */
+    public function getRelated(Article $article, int $limit = 5): Collection
+    {
+        return Article::active()
+            ->where('id', '!=', $article->id)
+            ->where(function ($query) use ($article) {
+                $query->where('category', $article->category)
+                      ->orWhere('source', $article->source);
+            })
+            ->orderBy('published_at', 'desc')
+            ->limit($limit)
+            ->get();
+    }
+
+    /**
+     * Feature article
+     */
+    public function feature(Article $article): bool
+    {
+        return $article->feature();
+    }
+
+    /**
+     * Unfeature article
+     */
+    public function unfeature(Article $article): bool
+    {
+        return $article->unfeature();
+    }
+
+    /**
+     * Activate article
+     */
+    public function activate(Article $article): bool
+    {
+        return $article->activate();
+    }
+
+    /**
+     * Deactivate article
+     */
+    public function deactivate(Article $article): bool
+    {
+        return $article->deactivate();
+    }
+}
+
+
+<?php
+
+use App\Http\Controllers\Api\{
+    CategoryController,
+    SourceController,
+    ArticleController,
+    ApiFetchLogController,
+    ArticleInteractionController,
+    ArticleKeywordController,
+    MediastackSettingController,
+    FetchScheduleController,
+    NewsController,
+    AnalyticsController,
+    MediaStackController
+};
+use Illuminate\Support\Facades\Route;
+
+/*
+|--------------------------------------------------------------------------
+| API Routes
+|--------------------------------------------------------------------------
+|
+| Here is where you can register API routes for your application. These
+| routes are loaded by the RouteServiceProvider and all of them will
+| be assigned to the "api" middleware group. Make something great!
+|
+*/
+
+// News API v1 routes
+Route::prefix('v1')->middleware(['throttle:news'])->group(function () {
+    
+    // Core Resource Routes
+    Route::apiResource('categories', CategoryController::class);
+    Route::apiResource('sources', SourceController::class);
+    Route::apiResource('articles', ArticleController::class);
+    Route::apiResource('fetch-logs', ApiFetchLogController::class);
+    Route::apiResource('interactions', ArticleInteractionController::class);
+    Route::apiResource('keywords', ArticleKeywordController::class);
+    Route::apiResource('settings', MediastackSettingController::class);
+    Route::apiResource('schedules', FetchScheduleController::class);
+    
+    // News-specific Custom Routes
+    Route::prefix('news')->controller(NewsController::class)->group(function () {
+        Route::get('latest', 'latest');
+        Route::get('trending', 'trending');
+        Route::get('featured', 'featured');
+        Route::get('by-category/{category}', 'byCategory');
+        Route::get('by-source/{source}', 'bySource');
+        Route::get('search', 'search');
+    });
+    
+    // Article-specific Custom Routes
+    Route::prefix('articles')->controller(ArticleController::class)->group(function () {
+        Route::patch('{article}/feature', 'feature');
+        Route::patch('{article}/unfeature', 'unfeature');
+        Route::patch('{article}/activate', 'activate');
+        Route::patch('{article}/deactivate', 'deactivate');
+        Route::post('{article}/view', 'recordView');
+        Route::get('{article}/related', 'related');
+    });
+    
+    // Category-specific Custom Routes
+    Route::prefix('categories')->controller(CategoryController::class)->group(function () {
+        Route::patch('{category}/activate', 'activate');
+        Route::patch('{category}/deactivate', 'deactivate');
+        Route::get('{category}/stats', 'stats');
+    });
+    
+    // Source-specific Custom Routes
+    Route::prefix('sources')->controller(SourceController::class)->group(function () {
+        Route::patch('{source}/activate', 'activate');
+        Route::patch('{source}/deactivate', 'deactivate');
+        Route::post('{source}/sync', 'syncFromMediaStack');
+        Route::get('{source}/performance', 'performance');
+    });
+    
+    // Analytics Routes
+    Route::prefix('analytics')->controller(AnalyticsController::class)->group(function () {
+        Route::get('dashboard', 'dashboard');
+        Route::get('articles/popular', 'popularArticles');
+        Route::get('categories/performance', 'categoryPerformance');
+        Route::get('sources/reliability', 'sourceReliability');
+        Route::get('interactions/summary', 'interactionsSummary');
+    });
+    
+    // MediaStack Integration Routes
+    Route::prefix('mediastack')->controller(MediaStackController::class)->group(function () {
+        Route::post('fetch', 'fetchNews');
+        Route::get('status', 'apiStatus');
+        Route::post('test-connection', 'testConnection');
+        Route::get('usage-stats', 'usageStats');
+    });
+});
+
+// Authentication required routes
+Route::middleware('auth:sanctum')->group(function () {
+    // User-specific routes go here
+});

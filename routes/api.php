@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\Api\{
+    AuthController,
     CategoryController,
     SourceController,
     ArticleController,
@@ -14,32 +15,24 @@ use App\Http\Controllers\Api\{
     MediaStackController
 };
 use Illuminate\Support\Facades\Route;
+use Illuminate\Http\Request;
 
 /*
 |--------------------------------------------------------------------------
 | API Routes
 |--------------------------------------------------------------------------
-|
-| Here is where you can register API routes for your application. These
-| routes are loaded by the RouteServiceProvider and all of them will
-| be assigned to the "api" middleware group. Make something great!
-|
 */
 
-// News API v1 routes
-Route::prefix('v1')->middleware(['throttle:news'])->group(function () {
+// Public API routes (no authentication required)
+Route::prefix('v1')->middleware(['throttle:api'])->group(function () {
     
-    // Core Resource Routes
-    Route::apiResource('categories', CategoryController::class);
-    Route::apiResource('sources', SourceController::class);
-    Route::apiResource('articles', ArticleController::class);
-    Route::apiResource('fetch-logs', ApiFetchLogController::class);
-    Route::apiResource('interactions', ArticleInteractionController::class);
-    Route::apiResource('keywords', ArticleKeywordController::class);
-    Route::apiResource('settings', MediastackSettingController::class);
-    Route::apiResource('schedules', FetchScheduleController::class);
+    // 🔐 AUTHENTICATION ROUTES (Public)
+    Route::prefix('auth')->controller(AuthController::class)->group(function () {
+        Route::post('register', 'register');          // POST /api/v1/auth/register
+        Route::post('login', 'login');                // POST /api/v1/auth/login
+    });
     
-    // News-specific Custom Routes
+    // News API for Frontend
     Route::prefix('news')->controller(NewsController::class)->group(function () {
         Route::get('latest', 'latest');
         Route::get('trending', 'trending');
@@ -47,32 +40,79 @@ Route::prefix('v1')->middleware(['throttle:news'])->group(function () {
         Route::get('by-category/{category}', 'byCategory');
         Route::get('by-source/{source}', 'bySource');
         Route::get('search', 'search');
+        Route::get('categorized', 'categorizedNews');
     });
     
-    // Article-specific Custom Routes
+    // Public article routes
     Route::prefix('articles')->controller(ArticleController::class)->group(function () {
+        Route::get('/', 'index');
+        Route::get('{article}', 'show');
+        Route::post('{article}/view', 'recordView');
+        Route::get('{article}/related', 'related');
+        Route::get('{article}/analytics', 'analytics');
+    });
+    
+    // Public category routes
+    Route::get('categories', [CategoryController::class, 'index']);
+    Route::get('categories/{category}', [CategoryController::class, 'show']);
+    
+    // Public source routes
+    Route::get('sources', [SourceController::class, 'index']);
+    Route::get('sources/{source}', [SourceController::class, 'show']);
+
+    //Testing Connection to MediaStack API
+    Route::post('mediastack/test-connection', [MediaStackController::class, 'testConnection']);
+
+});
+
+// Protected API routes (authentication required)
+Route::prefix('v1')->middleware(['auth:sanctum', 'throttle:api'])->group(function () {
+    
+    // 🔐 AUTHENTICATION ROUTES (Protected)
+    Route::prefix('auth')->controller(AuthController::class)->group(function () {
+        Route::post('logout', 'logout');              // POST /api/v1/auth/logout
+        Route::get('profile', 'profile');             // GET /api/v1/auth/profile
+        Route::put('profile', 'updateProfile');       // PUT /api/v1/auth/profile
+        Route::post('change-password', 'changePassword'); // POST /api/v1/auth/change-password
+    });
+    
+    // 👤 User-specific routes
+    Route::get('user', function (Request $request) {
+        return response()->json([
+            'success' => true,
+            'data' => $request->user()
+        ]);
+    });
+    
+    // Admin Article Management
+    Route::prefix('admin/articles')->controller(ArticleController::class)->group(function () {
+        Route::post('/', 'store');
+        Route::put('{article}', 'update');
+        Route::delete('{article}', 'destroy');
         Route::patch('{article}/feature', 'feature');
         Route::patch('{article}/unfeature', 'unfeature');
         Route::patch('{article}/activate', 'activate');
         Route::patch('{article}/deactivate', 'deactivate');
-        Route::post('{article}/view', 'recordView');
-        Route::get('{article}/related', 'related');
+        Route::post('sync-mediastack', 'syncFromMediaStack');
     });
     
-    // Category-specific Custom Routes
-    Route::prefix('categories')->controller(CategoryController::class)->group(function () {
-        Route::patch('{category}/activate', 'activate');
-        Route::patch('{category}/deactivate', 'deactivate');
-        Route::get('{category}/stats', 'stats');
+    // MediaStack Integration
+    Route::prefix('mediastack')->controller(MediaStackController::class)->group(function () {
+        Route::post('fetch', 'fetchNews');
+        Route::post('fetch-latest', 'fetchLatest');
+        Route::post('fetch-category/{category}', 'fetchByCategory');
+        Route::get('status', 'apiStatus');
+        Route::get('usage-stats', 'usageStats');
     });
     
-    // Source-specific Custom Routes
-    Route::prefix('sources')->controller(SourceController::class)->group(function () {
-        Route::patch('{source}/activate', 'activate');
-        Route::patch('{source}/deactivate', 'deactivate');
-        Route::post('{source}/sync', 'syncFromMediaStack');
-        Route::get('{source}/performance', 'performance');
-    });
+    // Admin Resource Routes
+    Route::apiResource('admin/categories', CategoryController::class);
+    Route::apiResource('admin/sources', SourceController::class);
+    Route::apiResource('admin/fetch-logs', ApiFetchLogController::class);
+    Route::apiResource('admin/interactions', ArticleInteractionController::class);
+    Route::apiResource('admin/keywords', ArticleKeywordController::class);
+    Route::apiResource('admin/settings', MediastackSettingController::class);
+    Route::apiResource('admin/schedules', FetchScheduleController::class);
     
     // Analytics Routes
     Route::prefix('analytics')->controller(AnalyticsController::class)->group(function () {
@@ -82,17 +122,9 @@ Route::prefix('v1')->middleware(['throttle:news'])->group(function () {
         Route::get('sources/reliability', 'sourceReliability');
         Route::get('interactions/summary', 'interactionsSummary');
     });
-    
-    // MediaStack Integration Routes
-    Route::prefix('mediastack')->controller(MediaStackController::class)->group(function () {
-        Route::post('fetch', 'fetchNews');
-        Route::get('status', 'apiStatus');
-        Route::post('test-connection', 'testConnection');
-        Route::get('usage-stats', 'usageStats');
-    });
 });
 
-// Authentication required routes
-Route::middleware('auth:sanctum')->group(function () {
-    // User-specific routes go here
+// Webhook routes (for external integrations)
+Route::prefix('webhooks')->middleware(['throttle:webhooks'])->group(function () {
+    Route::post('mediastack', [MediaStackController::class, 'webhook']);
 });

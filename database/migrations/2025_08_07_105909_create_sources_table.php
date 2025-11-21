@@ -17,7 +17,7 @@ return new class extends Migration
             $table->id();
             
             // Source identification from MediaStack API
-            $table->string('mediastack_id', 100)->unique()->comment('MediaStack source ID (e.g., cnn, bbc)');
+            $table->string('mediastack_id', 100)->unique()->nullable()->comment('MediaStack source ID (e.g., cnn, bbc)');
             $table->string('name', 200)->comment('Display name of the news source');
             $table->string('url', 500)->nullable()->comment('Official website URL of the source');
             $table->string('category', 50)->nullable()->comment('Primary category of this source');
