@@ -815,7 +815,7 @@ Route::prefix('v1')->middleware(['throttle:news'])->group(function () {
         Route::get('latest', 'latest');
         Route::get('trending', 'trending');
         Route::get('featured', 'featured');
-        Route::get('by-category/{category}', 'byCategory');
+        Route::get('`by-category`/{category}', 'byCategory');
         Route::get('by-source/{source}', 'bySource');
         Route::get('search', 'search');
     });

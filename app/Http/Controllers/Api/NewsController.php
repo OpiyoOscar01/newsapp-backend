@@ -24,7 +24,7 @@ class NewsController extends Controller
     public function latest(Request $request): JsonResponse
     {
         $validated = $request->validate([
-            'limit' => 'nullable|integer|min:1|max:50',
+            'limit' => 'nullable|integer|min:1|max:1000',
             'category' => 'nullable|string',
             'exclude' => 'nullable|array',
             'exclude.*' => 'integer|exists:articles,id',
@@ -65,7 +65,7 @@ class NewsController extends Controller
     public function trending(Request $request): JsonResponse
     {
         $validated = $request->validate([
-            'limit' => 'nullable|integer|min:1|max:50',
+            'limit' => 'nullable|integer|min:1|max:1000',
             'timeframe' => 'nullable|in:1,3,7,30', // days
         ]);
 
@@ -127,9 +127,9 @@ class NewsController extends Controller
     public function byCategory(Request $request, string $category): JsonResponse
     {
         $validated = $request->validate([
-            'limit' => 'nullable|integer|min:1|max:50',
+            'limit' => 'nullable|integer|min:1|max:1000',
             'page' => 'nullable|integer|min:1',
-            'per_page' => 'nullable|integer|min:1|max:50',
+            'per_page' => 'nullable|integer|min:1|max:1000',
         ]);
 
         try {
@@ -168,9 +168,9 @@ class NewsController extends Controller
     public function bySource(Request $request, string $source): JsonResponse
     {
         $validated = $request->validate([
-            'limit' => 'nullable|integer|min:1|max:50',
+            'limit' => 'nullable|integer|min:1|max:1000',
             'page' => 'nullable|integer|min:1',
-            'per_page' => 'nullable|integer|min:1|max:50',
+            'per_page' => 'nullable|integer|min:1|max:1000',
         ]);
 
         try {
@@ -209,7 +209,7 @@ class NewsController extends Controller
     public function search(Request $request): JsonResponse
     {
         $validated = $request->validate([
-            'q' => 'required|string|min:2|max:100',
+            'q' => 'required|string|min:2|max:1000',
             'category' => 'nullable|string',
             'source' => 'nullable|string',
             'date_from' => 'nullable|date',
@@ -250,7 +250,7 @@ class NewsController extends Controller
         $validated = $request->validate([
             'categories' => 'nullable|array',
             'categories.*' => 'string',
-            'limit_per_category' => 'nullable|integer|min:1|max:10',
+            'limit_per_category' => 'nullable|integer|min:1|max:1000',
         ]);
 
         try {

@@ -98,7 +98,7 @@ Route::prefix('v1')->middleware(['auth:sanctum', 'throttle:api'])->group(functio
     
     // MediaStack Integration
     Route::prefix('mediastack')->controller(MediaStackController::class)->group(function () {
-        Route::post('fetch', 'fetchNews');
+        Route::post('/fetch','fetchNews')->name('fetch');
         Route::post('fetch-latest', 'fetchLatest');
         Route::post('fetch-category/{category}', 'fetchByCategory');
         Route::get('status', 'apiStatus');
@@ -127,4 +127,39 @@ Route::prefix('v1')->middleware(['auth:sanctum', 'throttle:api'])->group(functio
 // Webhook routes (for external integrations)
 Route::prefix('webhooks')->middleware(['throttle:webhooks'])->group(function () {
     Route::post('mediastack', [MediaStackController::class, 'webhook']);
+});
+
+
+
+ // Public API routes (no authentication required)
+Route::prefix('v1')->middleware(['throttle:api'])->group(function () {
+    
+    // Visitor Statistics Routes
+    Route::prefix('analytics/visitors')->controller(AnalyticsController::class)->group(function () {
+        Route::post('track', 'trackVisitor');                    // POST /api/v1/analytics/visitors/track
+        Route::get('stats', 'getVisitorStats');                  // GET /api/v1/analytics/visitors/stats
+        Route::get('realtime', 'getRealtimeVisitors');           // GET /api/v1/analytics/visitors/realtime
+        Route::get('export', 'exportVisitorData');               // GET /api/v1/analytics/visitors/export
+    });
+    
+    // ... other routes ...
+});
+
+// Protected API routes (authentication required)
+Route::prefix('v1')->middleware(['auth:sanctum', 'throttle:api'])->group(function () {
+        
+    // Admin Analytics Routes (Protected)
+    Route::prefix('admin/analytics')->controller(AnalyticsController::class)->group(function () {
+        Route::get('dashboard', 'dashboard');
+        Route::get('articles/popular', 'popularArticles');
+        Route::get('categories/performance', 'categoryPerformance');
+        Route::get('sources/reliability', 'sourceReliability');
+        Route::get('interactions/summary', 'interactionsSummary');
+        
+        // Advanced visitor analytics
+        Route::get('visitors/export-full', 'exportFullVisitorData');
+        Route::get('visitors/sessions', 'getVisitorSessions');
+        Route::delete('visitors/cleanup', 'cleanupOldData');
+    });
+    
 });
