@@ -32,6 +32,7 @@ class MediaStackController extends Controller
             'sort' => ['nullable', Rule::in(['published_desc', 'published_asc', 'popularity'])],
             'limit' => 'nullable|integer|min:1|max:100',
             'offset' => 'nullable|integer|min:0',
+            'force_refresh' => 'nullable|boolean', // Add option to bypass date filtering
         ]);
 
         try {
@@ -42,6 +43,172 @@ class MediaStackController extends Controller
         } catch (\Exception $e) {
             return $this->errorResponse(
                 'Failed to fetch news from MediaStack',
+                500,
+                $e->getMessage()
+            );
+        }
+    }
+
+    /**
+     * Fetch paginated news with automatic offset handling
+     */
+    public function fetchPaginated(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'page' => 'nullable|integer|min:1',
+            'limit' => 'nullable|integer|min:1|max:100',
+            'categories' => 'nullable|string',
+            'sources' => 'nullable|string',
+            'countries' => 'nullable|string',
+            'languages' => 'nullable|string',
+            'date_from' => 'nullable|date', // Add date range support
+            'date_to' => 'nullable|date|after_or_equal:date_from',
+        ]);
+
+        // Calculate offset from page
+        $limit = $validated['limit'] ?? 100;
+        $page = $validated['page'] ?? 1;
+        $offset = ($page - 1) * $limit;
+
+        $params = array_merge($validated, [
+            'limit' => $limit,
+            'offset' => $offset,
+        ]);
+
+        try {
+            $result = $this->mediaStackService->fetchNews($params);
+
+            // Add pagination metadata
+            $result['pagination'] = array_merge($result['pagination'] ?? [], [
+                'current_page' => $page,
+                'per_page' => $limit,
+                'next_page' => $page + 1,
+                'prev_page' => $page > 1 ? $page - 1 : null,
+                'total_pages' => isset($result['pagination']['total']) 
+                    ? ceil($result['pagination']['total'] / $limit) 
+                    : null,
+            ]);
+
+            return $this->successResponse($result, 'Paginated news fetched successfully');
+
+        } catch (\Exception $e) {
+            return $this->errorResponse(
+                'Failed to fetch paginated news',
+                500,
+                $e->getMessage()
+            );
+        }
+    }
+
+    /**
+     * Fetch latest news with proper pagination
+     */
+    public function fetchLatest(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'limit' => 'nullable|integer|min:1|max:100',
+            'page' => 'nullable|integer|min:1',
+            'categories' => 'nullable|string',
+            'sources' => 'nullable|string',
+            'countries' => 'nullable|string',
+        ]);
+
+        $limit = $validated['limit'] ?? 100;
+        $page = $validated['page'] ?? 1;
+        $offset = ($page - 1) * $limit;
+
+        $params = array_merge($validated, [
+            'sort' => 'published_desc',
+            'limit' => $limit,
+            'offset' => $offset,
+        ]);
+
+        try {
+            $result = $this->mediaStackService->fetchNews($params);
+
+            return $this->successResponse($result, 'Latest news fetched successfully');
+
+        } catch (\Exception $e) {
+            return $this->errorResponse(
+                'Failed to fetch latest news',
+                500,
+                $e->getMessage()
+            );
+        }
+    }
+
+    /**
+     * Fetch news by category with pagination
+     */
+    public function fetchByCategory(Request $request, string $category): JsonResponse
+    {
+        $validated = $request->validate([
+            'limit' => 'nullable|integer|min:1|max:100',
+            'page' => 'nullable|integer|min:1',
+            'sources' => 'nullable|string',
+            'countries' => 'nullable|string',
+        ]);
+
+        $limit = $validated['limit'] ?? 100;
+        $page = $validated['page'] ?? 1;
+        $offset = ($page - 1) * $limit;
+
+        $params = array_merge($validated, [
+            'categories' => $category,
+            'sort' => 'published_desc',
+            'limit' => $limit,
+            'offset' => $offset,
+        ]);
+
+        try {
+            $result = $this->mediaStackService->fetchNews($params);
+
+            return $this->successResponse($result, "News for category '{$category}' fetched successfully");
+
+        } catch (\Exception $e) {
+            return $this->errorResponse(
+                "Failed to fetch news for category '{$category}'",
+                500,
+                $e->getMessage()
+            );
+        }
+    }
+
+    /**
+     * Fetch news by date range (for backfilling)
+     */
+    public function fetchByDateRange(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'from_date' => 'required|date',
+            'to_date' => 'required|date|after_or_equal:from_date',
+            'categories' => 'nullable|string',
+            'sources' => 'nullable|string',
+            'countries' => 'nullable|string',
+            'limit' => 'nullable|integer|min:1|max:100',
+            'page' => 'nullable|integer|min:1',
+        ]);
+
+        $limit = $validated['limit'] ?? 100;
+        $page = $validated['page'] ?? 1;
+        $offset = ($page - 1) * $limit;
+
+        $params = array_merge($validated, [
+            'limit' => $limit,
+            'offset' => $offset,
+            'date' => $validated['from_date'],
+            'date_to' => $validated['to_date'],
+            'date_search' => 'from',
+        ]);
+
+        try {
+            $result = $this->mediaStackService->fetchNews($params);
+
+            return $this->successResponse($result, 'News by date range fetched successfully');
+
+        } catch (\Exception $e) {
+            return $this->errorResponse(
+                'Failed to fetch news by date range',
                 500,
                 $e->getMessage()
             );
@@ -114,27 +281,18 @@ class MediaStackController extends Controller
     }
 
     /**
-     * Fetch latest news
+     * Get database statistics
      */
-    public function fetchLatest(Request $request): JsonResponse
+    public function dbStats(): JsonResponse
     {
-        $validated = $request->validate([
-            'limit' => 'nullable|integer|min:1|max:100',
-            'categories' => 'nullable|string',
-        ]);
-
         try {
-            $params = array_merge($validated, [
-                'sort' => 'published_desc',
-            ]);
+            $stats = $this->mediaStackService->getDatabaseStats();
 
-            $result = $this->mediaStackService->fetchNews($params);
-
-            return $this->successResponse($result, 'Latest news fetched successfully');
+            return $this->successResponse($stats, 'Database statistics retrieved');
 
         } catch (\Exception $e) {
             return $this->errorResponse(
-                'Failed to fetch latest news',
+                'Failed to retrieve database statistics',
                 500,
                 $e->getMessage()
             );
@@ -142,28 +300,18 @@ class MediaStackController extends Controller
     }
 
     /**
-     * Fetch news by category
+     * Reset fetch tracker (for testing)
      */
-    public function fetchByCategory(Request $request, string $category): JsonResponse
+    public function resetTracker(): JsonResponse
     {
-        $validated = $request->validate([
-            'limit' => 'nullable|integer|min:1|max:100',
-            'sources' => 'nullable|string',
-        ]);
-
         try {
-            $params = array_merge($validated, [
-                'categories' => $category,
-                'sort' => 'published_desc',
-            ]);
+            $this->mediaStackService->resetFetchTracker();
 
-            $result = $this->mediaStackService->fetchNews($params);
-
-            return $this->successResponse($result, "News for category '{$category}' fetched successfully");
+            return $this->successResponse(null, 'Fetch tracker reset successfully');
 
         } catch (\Exception $e) {
             return $this->errorResponse(
-                "Failed to fetch news for category '{$category}'",
+                'Failed to reset fetch tracker',
                 500,
                 $e->getMessage()
             );
