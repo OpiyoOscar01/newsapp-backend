@@ -24,7 +24,7 @@ use Illuminate\Http\Request;
 */
 
 // Public API routes (no authentication required)
-Route::prefix('v1')->middleware(['throttle:api'])->group(function () {
+Route::prefix('v1')->group(function () {
     
     // 🔐 AUTHENTICATION ROUTES (Public)
     Route::prefix('auth')->controller(AuthController::class)->group(function () {
@@ -66,7 +66,7 @@ Route::prefix('v1')->middleware(['throttle:api'])->group(function () {
 });
 
 // Protected API routes (authentication required)
-Route::prefix('v1')->middleware(['auth:sanctum', 'throttle:api'])->group(function () {
+Route::prefix('v1')->middleware(['auth:sanctum'])->group(function () {
     
     // 🔐 AUTHENTICATION ROUTES (Protected)
     Route::prefix('auth')->controller(AuthController::class)->group(function () {
@@ -146,7 +146,7 @@ Route::prefix('v1')->middleware(['throttle:api'])->group(function () {
 });
 
 // Protected API routes (authentication required)
-Route::prefix('v1')->middleware(['auth:sanctum', 'throttle:api'])->group(function () {
+Route::prefix('v1')->middleware(['auth:sanctum'])->group(function () {
         
     // Admin Analytics Routes (Protected)
     Route::prefix('admin/analytics')->controller(AnalyticsController::class)->group(function () {
