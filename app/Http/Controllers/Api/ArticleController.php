@@ -248,6 +248,44 @@ public function show($id): JsonResponse
         }
     }
 
+
+/**
+ * Display the specified article by SLUG
+ */
+public function showBySlug($slug): JsonResponse
+{
+    try {
+        // Find the article by slug
+        $article = Article::with([
+            'sourceModel', 
+            'categoryModel', 
+            'articleKeywords',
+            'interactions' => function ($query) {
+                $query->latest()->limit(10);
+            }
+        ])->where('slug', $slug)->first();
+
+        if (!$article) {
+            return $this->errorResponse(
+                'Article not found',
+                404
+            );
+        }
+        
+        return $this->successResponse(
+            new ArticleResource($article),
+            'Article retrieved successfully'
+        );
+
+    } catch (\Exception $e) {
+        return $this->errorResponse(
+            'Article not found',
+            404,
+            $e->getMessage()
+        );
+    }
+}
+
     /**
      * Deactivate the specified article
      */

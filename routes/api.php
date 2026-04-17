@@ -12,7 +12,8 @@ use App\Http\Controllers\Api\{
     FetchScheduleController,
     NewsController,
     AnalyticsController,
-    MediaStackController
+    MediaStackController,
+    NewsletterController
 };
 use Illuminate\Support\Facades\Route;
 use Illuminate\Http\Request;
@@ -46,7 +47,8 @@ Route::prefix('v1')->group(function () {
     // Public article routes
     Route::prefix('articles')->controller(ArticleController::class)->group(function () {
         Route::get('/', 'index');
-        Route::get('{article}', 'show');
+        Route::get('{id}', 'show');
+        Route::get('slug/{slug}', 'showBySlug');  // NEW ROUTE for slug lookup
         Route::post('{article}/view', 'recordView');
         Route::get('{article}/related', 'related');
         Route::get('{article}/analytics', 'analytics');
@@ -142,7 +144,6 @@ Route::prefix('v1')->middleware(['throttle:api'])->group(function () {
         Route::get('export', 'exportVisitorData');               // GET /api/v1/analytics/visitors/export
     });
     
-    // ... other routes ...
 });
 
 // Protected API routes (authentication required)
@@ -162,4 +163,14 @@ Route::prefix('v1')->middleware(['auth:sanctum'])->group(function () {
         Route::delete('visitors/cleanup', 'cleanupOldData');
     });
     
+});
+
+Route::prefix('v1')->group(function () {
+    // Newsletter Routes
+    Route::prefix('newsletter')->controller(NewsletterController::class)->group(function () {
+        Route::post('subscribe', 'subscribe');
+        Route::post('unsubscribe', 'unsubscribe');
+        Route::post('preferences', 'getPreferences');
+        Route::put('preferences', 'updatePreferences');
+    });
 });

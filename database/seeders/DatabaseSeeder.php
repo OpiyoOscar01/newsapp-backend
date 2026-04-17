@@ -6,64 +6,116 @@ use App\Models\User;
 use Illuminate\Database\Seeder;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Http;
+use Spatie\Permission\Models\Role;
+use Spatie\Permission\Models\Permission;
 
 class DatabaseSeeder extends Seeder
 {
     public function run(): void
     {
-        // Create or update System User
+        // ============================================
+        // STEP 1: CREATE ROLES (Simple approach first)
+        // ============================================
+        $this->command->info('Creating roles...');
+        
+        // Create roles without specifying guard (uses default guard from config/auth.php)
+        // By default, Laravel uses 'web' as the default guard
+        $adminRole = Role::firstOrCreate(['name' => 'admin']);
+        $systemRole = Role::firstOrCreate(['name' => 'system']);
+        $userRole = Role::firstOrCreate(['name' => 'user']);
+        
+        $this->command->info('✓ Admin role created (ID: ' . $adminRole->id . ')');
+        $this->command->info('✓ System role created (ID: ' . $systemRole->id . ')');
+        $this->command->info('✓ User role created (ID: ' . $userRole->id . ')');
+        
+        // ============================================
+        // STEP 2: CREATE USERS
+        // ============================================
+        $this->command->info("\nCreating users...");
+        
+        // Create System User
         $systemUser = User::updateOrCreate(
-            ['email' => 'system@newsapp.com'],
+            ['email' => 'system@definepress.com'],
             [
+                'first_name' => 'System',
+                'last_name' => 'User',
                 'name' => 'System User',
                 'password' => Hash::make('system_password_123'),
                 'email_verified_at' => now(),
             ]
         );
-
-        // Create or update Admin User
+        $systemUser->syncRoles(['system']); // Assign system role
+        $this->command->info('✓ System user created');
+        
+        // Create Admin User
         $adminUser = User::updateOrCreate(
-            ['email' => 'admin@newsapp.com'],
+            ['email' => 'admin@definepress.com'],
             [
+                'first_name' => 'Admin',
+                'last_name' => 'User',
                 'name' => 'Admin User',
                 'password' => Hash::make('admin_password_123'),
                 'email_verified_at' => now(),
             ]
         );
-
-        // Generate tokens
-        $systemToken = $systemUser->createToken('system-api-token')->plainTextToken;
-        $adminToken = $adminUser->createToken('admin-api-token')->plainTextToken;
-
-        $this->command->info('=== USER TOKENS GENERATED ===');
-        $this->command->info('System User Token: ' . $systemToken);
-        $this->command->info('Admin User Token: ' . $adminToken);
-        $this->command->info('=============================');
-        $this->command->info('Add to .env: VITE_API_TOKEN=' . $systemToken);
-
-        // Create or update Test User (with password!)
-        User::updateOrCreate(
+        $adminUser->syncRoles(['admin']); // Assign admin role
+        $this->command->info('✓ Admin user created');
+        
+        // Create Test User
+        $testUser = User::updateOrCreate(
             ['email' => 'test@example.com'],
             [
+                'first_name' => 'Test',
+                'last_name' => 'User',
                 'name' => 'Test User',
                 'password' => Hash::make('test_password_123'),
                 'email_verified_at' => now(),
             ]
         );
-
-        // === API CALLS TO /fetch ENDPOINT (5 times) ===
+        $testUser->syncRoles(['user']); // Assign user role
+        $this->command->info('✓ Test user created');
+        
+        // ============================================
+        // STEP 3: GENERATE API TOKENS
+        // ============================================
+        $this->command->info("\nGenerating API tokens...");
+        
+        $systemToken = $systemUser->createToken('system-api-token')->plainTextToken;
+        $adminToken = $adminUser->createToken('admin-api-token')->plainTextToken;
+        $testToken = $testUser->createToken('test-api-token')->plainTextToken;
+        
+        $this->command->info("\n========== USER TOKENS ==========");
+        $this->command->info("System User Token:\n{$systemToken}");
+        $this->command->info("\nAdmin User Token:\n{$adminToken}");
+        $this->command->info("\nTest User Token:\n{$testToken}");
+        $this->command->info("=================================\n");
+        
+        // ============================================
+        // STEP 4: MAKE API CALLS
+        // ============================================
+        $this->command->info("\nMaking API calls to fetch endpoint...\n");
+        
         for ($i = 1; $i <= 5; $i++) {
-            $this->command->info("=== API Call #{$i} ===");
-
-            $response = Http::withToken($systemToken)
-                ->post(config('app.url') . '/api/v1/mediastack/fetch');
-
-            if ($response->successful()) {
-                $this->command->info('API Response: ' . json_encode($response->json()));
-            } else {
-                $this->command->error('API call failed: ' . $response->status());
-                $this->command->error('Response body: ' . $response->body());
+            $this->command->info("API Call #{$i}");
+            
+            try {
+                $response = Http::withToken($systemToken)
+                    ->timeout(30)
+                    ->post(config('app.url') . '/api/v1/mediastack/fetch');
+                
+                if ($response->successful()) {
+                    $this->command->info("✓ Success: " . json_encode($response->json()));
+                } else {
+                    $this->command->error("✗ Failed with status: " . $response->status());
+                    $this->command->error("Response: " . $response->body());
+                }
+            } catch (\Exception $e) {
+                $this->command->error("✗ Exception: " . $e->getMessage());
             }
+            
+            $this->command->info("");
         }
+        
+        $this->command->info("✅ Database seeding completed successfully!");
     }
 }

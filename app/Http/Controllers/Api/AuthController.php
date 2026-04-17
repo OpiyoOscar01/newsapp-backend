@@ -10,116 +10,143 @@ use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Validation\Rules;
+use Illuminate\Validation\Rules\Password as RulesPassword;
+
 
 class AuthController extends Controller
 {
-    /**
-     * Register a new user
-     * 
-     * @param Request $request
-     * @return \Illuminate\Http\JsonResponse
-     */
-    public function register(Request $request)
-    {
-        // Validate incoming request
-        $validator = Validator::make($request->all(), [
-            'name' => ['required', 'string', 'max:255'],
-            'email' => ['required', 'string', 'email', 'max:255', 'unique:users'],
-            'password' => ['required', 'confirmed', Rules\Password::defaults()],
-        ]);
+   /**
+ * Register a new user
+ * 
+ * @param Request $request
+ * @return \Illuminate\Http\JsonResponse
+ */
+public function register(Request $request)
+{
+    // Validate incoming request
+    $validator = Validator::make($request->all(), [
+        'first_name' => ['required', 'string', 'max:255'],
+        'last_name' => ['required', 'string', 'max:255'],
+        'name' => ['nullable', 'string', 'max:255'],
+        'email' => ['required', 'string', 'email', 'max:255', 'unique:users'],
+        'password' => ['required', 'confirmed', RulesPassword::defaults()],
+    ]);
 
-        // Return validation errors if any
-        if ($validator->fails()) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Validation failed',
-                'errors' => $validator->errors()
-            ], Response::HTTP_UNPROCESSABLE_ENTITY);
-        }
-
-        // Create the user
-        $user = User::create([
-            'name' => $request->name,
-            'email' => $request->email,
-            'password' => Hash::make($request->password),
-        ]);
-
-        // Create API token for the user
-        $token = $user->createToken('auth-token')->plainTextToken;
-
-        // Return success response with user data and token
+    // Return validation errors if any
+    if ($validator->fails()) {
         return response()->json([
-            'success' => true,
-            'message' => 'User registered successfully',
-            'data' => [
-                'user' => [
-                    'id' => $user->id,
-                    'name' => $user->name,
-                    'email' => $user->email,
-                    'created_at' => $user->created_at,
-                ],
-                'access_token' => $token,
-                'token_type' => 'Bearer',
-            ]
-        ], Response::HTTP_CREATED);
+            'success' => false,
+            'message' => 'Validation failed',
+            'errors' => $validator->errors()
+        ], Response::HTTP_UNPROCESSABLE_ENTITY);
     }
 
-    /**
-     * Login user and create token
-     * 
-     * @param Request $request
-     * @return \Illuminate\Http\JsonResponse
-     */
-    public function login(Request $request)
-    {
-        // Validate login credentials
-        $validator = Validator::make($request->all(), [
-            'email' => ['required', 'string', 'email'],
-            'password' => ['required', 'string'],
-        ]);
+    // Create the user
+    $user = User::create([
+        'first_name' => $request->first_name,
+        'last_name' => $request->last_name,
+        'name' => $request->name ?? ($request->first_name . ' ' . $request->last_name),
+        'email' => $request->email,
+        'password' => Hash::make($request->password),
+    ]);
 
-        // Return validation errors if any
-        if ($validator->fails()) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Validation failed',
-                'errors' => $validator->errors()
-            ], Response::HTTP_UNPROCESSABLE_ENTITY);
-        }
-
-        // Attempt to authenticate user
-        if (!Auth::attempt($request->only('email', 'password'))) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Invalid login credentials',
-            ], Response::HTTP_UNAUTHORIZED);
-        }
-
-        // Get authenticated user
-        $user = Auth::user();
-        
-        // Revoke all existing tokens (optional - for security)
-        $user->tokens()->delete();
-        
-        // Create new API token
-        $token = $user->createToken('auth-token')->plainTextToken;
-
-        // Return success response
-        return response()->json([
-            'success' => true,
-            'message' => 'Login successful',
-            'data' => [
-                'user' => [
-                    'id' => $user->id,
-                    'name' => $user->name,
-                    'email' => $user->email,
-                ],
-                'access_token' => $token,
-                'token_type' => 'Bearer',
-            ]
-        ], Response::HTTP_OK);
+    // Check if user email is in admin emails list from .env
+    $adminEmails = explode(',', env('ADMIN_EMAILS', ''));
+    $isAdmin = in_array($request->email, $adminEmails);
+    
+    // Assign role - simple approach without specifying guard
+    if ($isAdmin) {
+        $user->assignRole('admin');  // ✅ Just the role name
+    } else {
+        $user->assignRole('user');   // ✅ Just the role name
     }
 
+    // Create API token for the user
+    $token = $user->createToken('auth-token')->plainTextToken;
+
+    // Return success response with user data and token
+    return response()->json([
+        'success' => true,
+        'message' => 'User registered successfully',
+        'data' => [
+            'user' => [
+                'id' => $user->id,
+                'name' => $user->name,
+                'first_name' => $user->first_name,
+                'last_name' => $user->last_name,
+                'email' => $user->email,
+                'is_admin' => $isAdmin,
+                'roles' => $user->getRoleNames(), // Returns roles for default guard
+                'created_at' => $user->created_at,
+            ],
+            'access_token' => $token,
+            'token_type' => 'Bearer',
+        ]
+    ], Response::HTTP_CREATED);
+}
+
+/**
+ * Login user and create token
+ * 
+ * @param Request $request
+ * @return \Illuminate\Http\JsonResponse
+ */
+public function login(Request $request)
+{
+    // Validate login credentials
+    $validator = Validator::make($request->all(), [
+        'email' => ['required', 'string', 'email'],
+        'password' => ['required', 'string'],
+    ]);
+
+    // Return validation errors if any
+    if ($validator->fails()) {
+        return response()->json([
+            'success' => false,
+            'message' => 'Validation failed',
+            'errors' => $validator->errors()
+        ], Response::HTTP_UNPROCESSABLE_ENTITY);
+    }
+
+    // Attempt to authenticate user
+    if (!Auth::attempt($request->only('email', 'password'))) {
+        return response()->json([
+            'success' => false,
+            'message' => 'Invalid login credentials',
+        ], Response::HTTP_UNAUTHORIZED);
+    }
+
+    // Get authenticated user
+    $user = Auth::user();
+    
+    // Check if user is admin - simple approach
+    $isAdmin = $user->hasRole('admin');
+    
+    // Revoke all existing tokens (optional - for security)
+    $user->tokens()->delete();
+    
+    // Create new API token
+    $token = $user->createToken('auth-token')->plainTextToken;
+
+    // Return success response
+    return response()->json([
+        'success' => true,
+        'message' => 'Login successful',
+        'data' => [
+            'user' => [
+                'id' => $user->id,
+                'name' => $user->name,
+                'first_name' => $user->first_name,
+                'last_name' => $user->last_name,
+                'email' => $user->email,
+                'is_admin' => $isAdmin,
+                'roles' => $user->getRoleNames(),
+            ],
+            'access_token' => $token,
+            'token_type' => 'Bearer',
+        ]
+    ], Response::HTTP_OK);
+}
     /**
      * Logout user (revoke token)
      * 
