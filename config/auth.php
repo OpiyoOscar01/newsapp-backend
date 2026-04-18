@@ -14,7 +14,7 @@ return [
     */
 
     'defaults' => [
-        'guard' => env('AUTH_GUARD', 'web'),
+        'guard' => env('AUTH_GUARD', 'sanctum'), // Changed from 'web' to 'sanctum'
         'passwords' => env('AUTH_PASSWORD_BROKER', 'users'),
     ],
 
@@ -38,6 +38,18 @@ return [
     'guards' => [
         'web' => [
             'driver' => 'session',
+            'provider' => 'users',
+        ],
+        
+        // Add sanctum guard for API authentication
+        'sanctum' => [
+            'driver' => 'sanctum',
+            'provider' => 'users',
+        ],
+        
+        // Optional: Add API guard if needed
+        'api' => [
+            'driver' => 'sanctum',
             'provider' => 'users',
         ],
     ],

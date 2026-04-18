@@ -14,15 +14,24 @@ class DatabaseSeeder extends Seeder
     public function run(): void
     {
         // ============================================
-        // STEP 1: CREATE ROLES (Simple approach first)
+        // STEP 1: CREATE ROLES WITH PROPER GUARD
         // ============================================
         $this->command->info('Creating roles...');
         
-        // Create roles without specifying guard (uses default guard from config/auth.php)
-        // By default, Laravel uses 'web' as the default guard
-        $adminRole = Role::firstOrCreate(['name' => 'admin']);
-        $systemRole = Role::firstOrCreate(['name' => 'system']);
-        $userRole = Role::firstOrCreate(['name' => 'user']);
+        // Get the default guard from config (should be 'sanctum' now)
+        $guardName = config('auth.defaults.guard', 'web');
+        $this->command->info("Using guard: {$guardName}");
+        
+        // Create roles with explicit guard
+        $adminRole = Role::firstOrCreate(
+            ['name' => 'admin', 'guard_name' => $guardName]
+        );
+        $systemRole = Role::firstOrCreate(
+            ['name' => 'system', 'guard_name' => $guardName]
+        );
+        $userRole = Role::firstOrCreate(
+            ['name' => 'user', 'guard_name' => $guardName]
+        );
         
         $this->command->info('✓ Admin role created (ID: ' . $adminRole->id . ')');
         $this->command->info('✓ System role created (ID: ' . $systemRole->id . ')');
@@ -44,7 +53,7 @@ class DatabaseSeeder extends Seeder
                 'email_verified_at' => now(),
             ]
         );
-        $systemUser->syncRoles(['system']); // Assign system role
+        $systemUser->syncRoles(['system']);
         $this->command->info('✓ System user created');
         
         // Create Admin User
@@ -58,7 +67,7 @@ class DatabaseSeeder extends Seeder
                 'email_verified_at' => now(),
             ]
         );
-        $adminUser->syncRoles(['admin']); // Assign admin role
+        $adminUser->syncRoles(['admin']);
         $this->command->info('✓ Admin user created');
         
         // Create Test User
@@ -72,7 +81,7 @@ class DatabaseSeeder extends Seeder
                 'email_verified_at' => now(),
             ]
         );
-        $testUser->syncRoles(['user']); // Assign user role
+        $testUser->syncRoles(['user']);
         $this->command->info('✓ Test user created');
         
         // ============================================

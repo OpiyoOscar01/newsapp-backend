@@ -17,6 +17,7 @@ use App\Http\Controllers\Api\{
 };
 use Illuminate\Support\Facades\Route;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth;
 
 /*
 |--------------------------------------------------------------------------
@@ -24,16 +25,22 @@ use Illuminate\Http\Request;
 |--------------------------------------------------------------------------
 */
 
-// Public API routes (no authentication required)
+// ============================================================================
+// PUBLIC API ROUTES (No Authentication Required)
+// ============================================================================
 Route::prefix('v1')->group(function () {
     
-    // 🔐 AUTHENTICATION ROUTES (Public)
+    // ------------------------------------------------------------------------
+    // Authentication Routes (Public)
+    // ------------------------------------------------------------------------
     Route::prefix('auth')->controller(AuthController::class)->group(function () {
-        Route::post('register', 'register');          // POST /api/v1/auth/register
-        Route::post('login', 'login');                // POST /api/v1/auth/login
+        Route::post('register', 'register');
+        Route::post('login', 'login');
     });
     
-    // News API for Frontend
+    // ------------------------------------------------------------------------
+    // News Routes (Public)
+    // ------------------------------------------------------------------------
     Route::prefix('news')->controller(NewsController::class)->group(function () {
         Route::get('latest', 'latest');
         Route::get('trending', 'trending');
@@ -44,53 +51,111 @@ Route::prefix('v1')->group(function () {
         Route::get('categorized', 'categorizedNews');
     });
     
-    // Public article routes
-    Route::prefix('articles')->controller(ArticleController::class)->group(function () {
-        Route::get('/', 'index');
-        Route::get('{id}', 'show');
-        Route::get('slug/{slug}', 'showBySlug');  // NEW ROUTE for slug lookup
-        Route::post('{article}/view', 'recordView');
-        Route::get('{article}/related', 'related');
-        Route::get('{article}/analytics', 'analytics');
-    });
-    
-    // Article Interactions Routes
-    Route::prefix('articles')->controller(ArticleInteractionController::class)->group(function () {
-        Route::post('{article}/view', 'recordView');
-        Route::post('{article}/like/toggle', 'toggleLike');
-        Route::post('{article}/share', 'recordShare');
-        Route::post('{article}/bookmark/toggle', 'toggleBookmark');
-        Route::post('{article}/comments', 'addComment');
-        Route::put('comments/{comment}', 'updateComment');
-        Route::delete('comments/{comment}', 'deleteComment');
-        Route::get('{article}/comments', 'getComments');
-        Route::get('{article}/interactions/counts', 'getInteractionCounts');
-    });
-    // Public category routes
+    // ------------------------------------------------------------------------
+    // Category Routes (Public)
+    // ------------------------------------------------------------------------
     Route::get('categories', [CategoryController::class, 'index']);
     Route::get('categories/{category}', [CategoryController::class, 'show']);
     
-    // Public source routes
+    // ------------------------------------------------------------------------
+    // Source Routes (Public)
+    // ------------------------------------------------------------------------
     Route::get('sources', [SourceController::class, 'index']);
     Route::get('sources/{source}', [SourceController::class, 'show']);
-
-    //Testing Connection to MediaStack API
-    Route::post('mediastack/test-connection', [MediaStackController::class, 'testConnection']);
-
-});
-
-// Protected API routes (authentication required)
-Route::prefix('v1')->middleware(['auth:sanctum'])->group(function () {
     
-    // 🔐 AUTHENTICATION ROUTES (Protected)
-    Route::prefix('auth')->controller(AuthController::class)->group(function () {
-        Route::post('logout', 'logout');              // POST /api/v1/auth/logout
-        Route::get('profile', 'profile');             // GET /api/v1/auth/profile
-        Route::put('profile', 'updateProfile');       // PUT /api/v1/auth/profile
-        Route::post('change-password', 'changePassword'); // POST /api/v1/auth/change-password
+    // ------------------------------------------------------------------------
+    // Article Routes (Public) - ORDER MATTERS! Put specific routes FIRST
+    // ------------------------------------------------------------------------
+   Route::prefix('articles')->group(function () {
+    // SPECIFIC ROUTES FIRST (these have static segments)
+    Route::get('slug/{slug}', [ArticleController::class, 'showBySlug']);
+    
+    // ============================================================
+    // PUBLIC ROUTES (No authentication required)
+    // ============================================================
+    Route::post('{articleId}/view', [ArticleInteractionController::class, 'recordView'])
+        ->where('articleId', '[0-9]+');
+    Route::post('{articleId}/like/toggle', [ArticleInteractionController::class, 'toggleLike'])
+        ->where('articleId', '[0-9]+');
+    Route::post('{articleId}/share', [ArticleInteractionController::class, 'recordShare'])
+        ->where('articleId', '[0-9]+');
+    Route::get('{articleId}/comments', [ArticleInteractionController::class, 'getComments'])
+        ->where('articleId', '[0-9]+');
+    Route::get('{articleId}/interactions/counts', [ArticleInteractionController::class, 'getInteractionCounts'])
+        ->where('articleId', '[0-9]+');
+    Route::get('{articleId}/related', [ArticleController::class, 'related'])
+        ->where('articleId', '[0-9]+');
+    
+    // ============================================================
+    // PROTECTED ROUTES (Authentication required)
+    // ============================================================
+    Route::middleware(['auth:sanctum'])->group(function () {
+        Route::post('{articleId}/comments', [ArticleInteractionController::class, 'addComment'])
+            ->where('articleId', '[0-9]+');
+        Route::post('{articleId}/bookmark/toggle', [ArticleInteractionController::class, 'toggleBookmark'])
+            ->where('articleId', '[0-9]+');
+        Route::get('{articleId}/analytics', [ArticleController::class, 'analytics'])
+            ->where('articleId', '[0-9]+');
+        Route::put('comments/{comment}', [ArticleInteractionController::class, 'updateComment']);
+        Route::delete('comments/{comment}', [ArticleInteractionController::class, 'deleteComment']);
     });
     
-    // 👤 User-specific routes
+    // GENERAL ROUTES LAST (public)
+    Route::get('/', [ArticleController::class, 'index']);
+    Route::get('{id}', [ArticleController::class, 'show'])
+        ->where('id', '[0-9]+');
+});
+    
+    // ------------------------------------------------------------------------
+    // Newsletter Routes (Public)
+    // ------------------------------------------------------------------------
+    Route::prefix('newsletter')->controller(NewsletterController::class)->group(function () {
+        Route::post('subscribe', 'subscribe');
+        Route::post('unsubscribe', 'unsubscribe');
+        Route::post('preferences', 'getPreferences');
+        Route::put('preferences', 'updatePreferences');
+    });
+    
+    // ------------------------------------------------------------------------
+    // MediaStack Routes (Public)
+    // ------------------------------------------------------------------------
+    Route::post('mediastack/test-connection', [MediaStackController::class, 'testConnection']);
+});
+
+// ============================================================================
+// PUBLIC API ROUTES WITH THROTTLE
+// ============================================================================
+Route::prefix('v1')->middleware(['throttle:api'])->group(function () {
+    
+    // ------------------------------------------------------------------------
+    // Visitor Analytics Routes (Public with throttle)
+    // ------------------------------------------------------------------------
+    Route::prefix('analytics/visitors')->controller(AnalyticsController::class)->group(function () {
+        Route::post('track', 'trackVisitor');
+        Route::get('stats', 'getVisitorStats');
+        Route::get('realtime', 'getRealtimeVisitors');
+        Route::get('export', 'exportVisitorData');
+    });
+});
+
+// ============================================================================
+// PROTECTED API ROUTES (Authentication Required)
+// ============================================================================
+Route::prefix('v1')->middleware(['auth:sanctum'])->group(function () {
+    
+    // ------------------------------------------------------------------------
+    // Authentication Routes (Protected)
+    // ------------------------------------------------------------------------
+    Route::prefix('auth')->controller(AuthController::class)->group(function () {
+        Route::post('logout', 'logout');
+        Route::get('profile', 'profile');
+        Route::put('profile', 'updateProfile');
+        Route::post('change-password', 'changePassword');
+    });
+    
+    // ------------------------------------------------------------------------
+    // User Routes (Protected)
+    // ------------------------------------------------------------------------
     Route::get('user', function (Request $request) {
         return response()->json([
             'success' => true,
@@ -98,7 +163,17 @@ Route::prefix('v1')->middleware(['auth:sanctum'])->group(function () {
         ]);
     });
     
-    // Admin Article Management
+    // ------------------------------------------------------------------------
+    // User Interaction Routes (Protected)
+    // ------------------------------------------------------------------------
+    Route::prefix('user')->controller(ArticleInteractionController::class)->group(function () {
+        Route::get('likes', 'getUserLikes');
+        Route::get('bookmarks', 'getUserBookmarks');
+    });
+    
+    // ------------------------------------------------------------------------
+    // Admin Article Management Routes (Protected)
+    // ------------------------------------------------------------------------
     Route::prefix('admin/articles')->controller(ArticleController::class)->group(function () {
         Route::post('/', 'store');
         Route::put('{article}', 'update');
@@ -110,25 +185,55 @@ Route::prefix('v1')->middleware(['auth:sanctum'])->group(function () {
         Route::post('sync-mediastack', 'syncFromMediaStack');
     });
     
-    // MediaStack Integration
+    // ------------------------------------------------------------------------
+    // Admin Category Management Routes (Protected)
+    // ------------------------------------------------------------------------
+    Route::apiResource('admin/categories', CategoryController::class);
+    
+    // ------------------------------------------------------------------------
+    // Admin Source Management Routes (Protected)
+    // ------------------------------------------------------------------------
+    Route::apiResource('admin/sources', SourceController::class);
+    
+    // ------------------------------------------------------------------------
+    // Admin Fetch Log Routes (Protected)
+    // ------------------------------------------------------------------------
+    Route::apiResource('admin/fetch-logs', ApiFetchLogController::class);
+    
+    // ------------------------------------------------------------------------
+    // Admin Interaction Routes (Protected)
+    // ------------------------------------------------------------------------
+    Route::apiResource('admin/interactions', ArticleInteractionController::class);
+    
+    // ------------------------------------------------------------------------
+    // Admin Keyword Routes (Protected)
+    // ------------------------------------------------------------------------
+    Route::apiResource('admin/keywords', ArticleKeywordController::class);
+    
+    // ------------------------------------------------------------------------
+    // Admin MediaStack Settings Routes (Protected)
+    // ------------------------------------------------------------------------
+    Route::apiResource('admin/settings', MediastackSettingController::class);
+    
+    // ------------------------------------------------------------------------
+    // Admin Fetch Schedule Routes (Protected)
+    // ------------------------------------------------------------------------
+    Route::apiResource('admin/schedules', FetchScheduleController::class);
+    
+    // ------------------------------------------------------------------------
+    // MediaStack Integration Routes (Protected)
+    // ------------------------------------------------------------------------
     Route::prefix('mediastack')->controller(MediaStackController::class)->group(function () {
-        Route::post('/fetch','fetchNews')->name('fetch');
+        Route::post('/fetch', 'fetchNews');
         Route::post('fetch-latest', 'fetchLatest');
         Route::post('fetch-category/{category}', 'fetchByCategory');
         Route::get('status', 'apiStatus');
         Route::get('usage-stats', 'usageStats');
     });
     
-    // Admin Resource Routes
-    Route::apiResource('admin/categories', CategoryController::class);
-    Route::apiResource('admin/sources', SourceController::class);
-    Route::apiResource('admin/fetch-logs', ApiFetchLogController::class);
-    Route::apiResource('admin/interactions', ArticleInteractionController::class);
-    Route::apiResource('admin/keywords', ArticleKeywordController::class);
-    Route::apiResource('admin/settings', MediastackSettingController::class);
-    Route::apiResource('admin/schedules', FetchScheduleController::class);
-    
-    // Analytics Routes
+    // ------------------------------------------------------------------------
+    // Analytics Routes (Protected)
+    // ------------------------------------------------------------------------
     Route::prefix('analytics')->controller(AnalyticsController::class)->group(function () {
         Route::get('dashboard', 'dashboard');
         Route::get('articles/popular', 'popularArticles');
@@ -136,32 +241,10 @@ Route::prefix('v1')->middleware(['auth:sanctum'])->group(function () {
         Route::get('sources/reliability', 'sourceReliability');
         Route::get('interactions/summary', 'interactionsSummary');
     });
-});
-
-// Webhook routes (for external integrations)
-Route::prefix('webhooks')->middleware(['throttle:webhooks'])->group(function () {
-    Route::post('mediastack', [MediaStackController::class, 'webhook']);
-});
-
-
-
- // Public API routes (no authentication required)
-Route::prefix('v1')->middleware(['throttle:api'])->group(function () {
     
-    // Visitor Statistics Routes
-    Route::prefix('analytics/visitors')->controller(AnalyticsController::class)->group(function () {
-        Route::post('track', 'trackVisitor');                    // POST /api/v1/analytics/visitors/track
-        Route::get('stats', 'getVisitorStats');                  // GET /api/v1/analytics/visitors/stats
-        Route::get('realtime', 'getRealtimeVisitors');           // GET /api/v1/analytics/visitors/realtime
-        Route::get('export', 'exportVisitorData');               // GET /api/v1/analytics/visitors/export
-    });
-    
-});
-
-// Protected API routes (authentication required)
-Route::prefix('v1')->middleware(['auth:sanctum'])->group(function () {
-        
+    // ------------------------------------------------------------------------
     // Admin Analytics Routes (Protected)
+    // ------------------------------------------------------------------------
     Route::prefix('admin/analytics')->controller(AnalyticsController::class)->group(function () {
         Route::get('dashboard', 'dashboard');
         Route::get('articles/popular', 'popularArticles');
@@ -174,23 +257,72 @@ Route::prefix('v1')->middleware(['auth:sanctum'])->group(function () {
         Route::get('visitors/sessions', 'getVisitorSessions');
         Route::delete('visitors/cleanup', 'cleanupOldData');
     });
-    
 });
 
-Route::prefix('v1')->group(function () {
-    // Newsletter Routes
-    Route::prefix('newsletter')->controller(NewsletterController::class)->group(function () {
-        Route::post('subscribe', 'subscribe');
-        Route::post('unsubscribe', 'unsubscribe');
-        Route::post('preferences', 'getPreferences');
-        Route::put('preferences', 'updatePreferences');
+// ============================================================================
+// WEBHOOK ROUTES (External Integrations)
+// ============================================================================
+Route::prefix('webhooks')->middleware(['throttle:webhooks'])->group(function () {
+    Route::post('mediastack', [MediaStackController::class, 'webhook']);
+});
+
+
+
+
+// ============================================================================
+// AUTH DEBUG/CHECK ENDPOINTS (For testing authentication)
+// ============================================================================
+Route::prefix('v1')->middleware(['auth:sanctum'])->group(function () {
+    
+    // ------------------------------------------------------------------------
+    // Auth Check Endpoint - Returns detailed auth information
+    // ------------------------------------------------------------------------
+    Route::get('/auth/check', function (Request $request) {
+        $user = $request->user();
+        
+        return response()->json([
+            'success' => true,
+            'message' => 'Authentication check completed',
+            'data' => [
+                'authenticated' => Auth::check(),
+                'user_id' => Auth::id(),
+                'user_email' => $user?->email,
+                'user_name' => $user?->first_name ? $user?->first_name . ' ' . $user?->last_name : $user?->name,
+                'user' => $user,
+                'token_details' => [
+                    'has_token' => !empty($request->bearerToken()),
+                    'token_preview' => $request->bearerToken() ? substr($request->bearerToken(), 0, 30) . '...' : null,
+                ],
+                'headers' => [
+                    'authorization' => $request->header('Authorization') ? 'Bearer [HIDDEN]' : null,
+                    'has_authorization' => !empty($request->header('Authorization')),
+                ],
+            ]
+        ]);
+    });
+    
+    // ------------------------------------------------------------------------
+    // Simple Auth Check - Returns just authenticated status
+    // ------------------------------------------------------------------------
+    Route::get('/auth/status', function (Request $request) {
+        return response()->json([
+            'authenticated' => Auth::check(),
+            'user_id' => Auth::id(),
+        ]);
+    });
+    
+    // ------------------------------------------------------------------------
+    // Test endpoint to echo token info (for debugging)
+    // ------------------------------------------------------------------------
+    Route::get('/auth/debug-token', function (Request $request) {
+        return response()->json([
+            'bearer_token' => $request->bearerToken(),
+            'has_bearer_token' => !empty($request->bearerToken()),
+            'auth_header' => $request->header('Authorization'),
+            'all_headers' => $request->headers->all(),
+            'user_agent' => $request->userAgent(),
+            'ip' => $request->ip(),
+        ]);
     });
 });
 
-
-
-// User-specific interaction routes (protected)
-Route::prefix('user')->middleware(['auth:sanctum'])->controller(ArticleInteractionController::class)->group(function () {
-    Route::get('likes', 'getUserLikes');
-    Route::get('bookmarks', 'getUserBookmarks');
-});

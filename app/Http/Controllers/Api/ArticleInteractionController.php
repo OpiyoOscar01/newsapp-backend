@@ -10,6 +10,7 @@ use App\Models\ArticleInteraction;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Validator;
 
 class ArticleInteractionController extends Controller
@@ -17,10 +18,27 @@ class ArticleInteractionController extends Controller
     use ApiResponseTrait;
 
     /**
+     * Get article by ID helper
+     */
+    private function findArticle($id)
+    {
+        $article = Article::find($id);
+        if (!$article) {
+            return null;
+        }
+        return $article;
+    }
+
+    /**
      * Record an article view
      */
-    public function recordView(Request $request, Article $article)
+    public function recordView(Request $request, $articleId)
     {
+        $article = $this->findArticle($articleId);
+        if (!$article) {
+            return $this->errorResponse('Article not found', 404);
+        }
+
         $validator = Validator::make($request->all(), [
             'referrer' => 'nullable|string|max:500',
             'time_spent' => 'nullable|integer|min:0',
@@ -36,7 +54,7 @@ class ArticleInteractionController extends Controller
             
             // Rate limit: only record one view per session per hour
             if (!cache()->has($sessionKey)) {
-                $interaction = ArticleInteraction::create([
+                ArticleInteraction::create([
                     'article_id' => $article->id,
                     'user_id' => Auth::id(),
                     'interaction_type' => 'view',
@@ -59,6 +77,7 @@ class ArticleInteractionController extends Controller
 
             return $this->successResponse(null, 'View recorded successfully');
         } catch (\Exception $e) {
+            Log::error('Failed to record view: ' . $e->getMessage());
             return $this->errorResponse('Failed to record view', 500, $e->getMessage());
         }
     }
@@ -66,8 +85,13 @@ class ArticleInteractionController extends Controller
     /**
      * Toggle like on an article
      */
-    public function toggleLike(Request $request, Article $article)
+    public function toggleLike(Request $request, $articleId)
     {
+        $article = $this->findArticle($articleId);
+        if (!$article) {
+            return $this->errorResponse('Article not found', 404);
+        }
+
         try {
             $userId = Auth::id();
             $sessionId = session()->getId();
@@ -108,6 +132,7 @@ class ArticleInteractionController extends Controller
                 'like_count' => $likeCount,
             ], $liked ? 'Article liked' : 'Like removed');
         } catch (\Exception $e) {
+            Log::error('Failed to toggle like: ' . $e->getMessage());
             return $this->errorResponse('Failed to toggle like', 500, $e->getMessage());
         }
     }
@@ -115,8 +140,13 @@ class ArticleInteractionController extends Controller
     /**
      * Record a share
      */
-    public function recordShare(Request $request, Article $article)
+    public function recordShare(Request $request, $articleId)
     {
+        $article = $this->findArticle($articleId);
+        if (!$article) {
+            return $this->errorResponse('Article not found', 404);
+        }
+
         $validator = Validator::make($request->all(), [
             'platform' => 'nullable|string|max:50',
         ]);
@@ -145,6 +175,7 @@ class ArticleInteractionController extends Controller
                 'share_count' => $shareCount,
             ], 'Share recorded successfully');
         } catch (\Exception $e) {
+            Log::error('Failed to record share: ' . $e->getMessage());
             return $this->errorResponse('Failed to record share', 500, $e->getMessage());
         }
     }
@@ -152,8 +183,13 @@ class ArticleInteractionController extends Controller
     /**
      * Toggle bookmark on an article
      */
-    public function toggleBookmark(Request $request, Article $article)
+    public function toggleBookmark(Request $request, $articleId)
     {
+        $article = $this->findArticle($articleId);
+        if (!$article) {
+            return $this->errorResponse('Article not found', 404);
+        }
+
         try {
             $userId = Auth::id();
             
@@ -191,6 +227,7 @@ class ArticleInteractionController extends Controller
                 'bookmark_count' => $bookmarkCount,
             ], $bookmarked ? 'Article bookmarked' : 'Bookmark removed');
         } catch (\Exception $e) {
+            Log::error('Failed to toggle bookmark: ' . $e->getMessage());
             return $this->errorResponse('Failed to toggle bookmark', 500, $e->getMessage());
         }
     }
@@ -198,20 +235,65 @@ class ArticleInteractionController extends Controller
     /**
      * Add a comment to an article
      */
-    public function addComment(Request $request, Article $article)
+
+    public function addComment(Request $request, $articleId)
     {
+        // DEBUG: Log request start
+        Log::info('[ADD COMMENT] Request started', [
+            'article_id' => $articleId,
+            'ip' => $request->ip(),
+            'user_agent' => $request->userAgent(),
+            'has_comment' => $request->has('comment'),
+            'comment_preview' => $request->has('comment') ? substr($request->comment, 0, 50) : null,
+            'parent_comment_id' => $request->parent_comment_id,
+        ]);
+
+        $article = $this->findArticle($articleId);
+        if (!$article) {
+            Log::warning('[ADD COMMENT] Article not found', ['article_id' => $articleId]);
+            return $this->errorResponse('Article not found', 404);
+        }
+
+        Log::info('[ADD COMMENT] Article found', [
+            'article_id' => $article->id,
+            'article_title' => $article->title,
+        ]);
+
         $validator = Validator::make($request->all(), [
             'comment' => 'required|string|min:1|max:5000',
             'parent_comment_id' => 'nullable|exists:article_interactions,id',
         ]);
 
         if ($validator->fails()) {
+            Log::warning('[ADD COMMENT] Validation failed', [
+                'errors' => $validator->errors()->toArray()
+            ]);
             return $this->errorResponse('Validation failed', 422, $validator->errors());
         }
 
         try {
+            // DEBUG: Authentication check
+            Log::info('[ADD COMMENT] Authentication check', [
+                'auth_check' => Auth::check(),
+                'auth_id' => Auth::id(),
+                'bearer_token' => $request->bearerToken(),
+                'has_bearer_token' => !empty($request->bearerToken()),
+                'authorization_header' => $request->header('Authorization') ? 'present' : 'missing',
+                'sanctum_check' => Auth::guard('sanctum')->check(),
+                'sanctum_id' => Auth::guard('sanctum')->id(),
+            ]);
+
             $userId = Auth::id();
             $sessionId = session()->getId();
+            $authUser = Auth::user();
+
+            Log::info('[ADD COMMENT] User data', [
+                'user_id' => $userId,
+                'session_id' => $sessionId,
+                'has_auth_user' => !is_null($authUser),
+                'auth_user_email' => $authUser?->email,
+                'auth_user_name' => $authUser?->first_name . ' ' . $authUser?->last_name,
+            ]);
 
             $comment = ArticleInteraction::create([
                 'article_id' => $article->id,
@@ -225,36 +307,98 @@ class ArticleInteractionController extends Controller
                 'interaction_date' => now(),
             ]);
 
+            Log::info('[ADD COMMENT] Comment created', [
+                'comment_id' => $comment->id,
+                'user_id' => $comment->user_id,
+                'article_id' => $comment->article_id,
+            ]);
+
+            // Load the user relationship
             $comment->load('user');
 
-            return $this->successResponse([
+            Log::info('[ADD COMMENT] User relationship loaded', [
+                'has_user_relation' => !is_null($comment->user),
+                'comment_user_id' => $comment->user?->id,
+                'comment_user_email' => $comment->user?->email,
+            ]);
+
+            // Format user data from the authenticated user
+            $userData = [];
+            
+            if ($authUser) {
+                // Get the user's display name
+                $displayName = '';
+                if ($authUser->first_name) {
+                    $displayName = trim($authUser->first_name . ' ' . ($authUser->last_name ?? ''));
+                } elseif ($authUser->name) {
+                    $displayName = $authUser->name;
+                } else {
+                    $displayName = $authUser->email;
+                }
+                
+                $userData = [
+                    'id' => $authUser->id,
+                    'name' => $displayName,
+                    'email' => $authUser->email,
+                    'avatar' => null,
+                ];
+                
+                Log::info('[ADD COMMENT] User data formatted for authenticated user', [
+                    'user_id' => $authUser->id,
+                    'display_name' => $displayName,
+                ]);
+            } else {
+                $userData = [
+                    'id' => null,
+                    'name' => 'Anonymous',
+                    'email' => null,
+                    'avatar' => null,
+                ];
+                
+                Log::warning('[ADD COMMENT] No authenticated user, using anonymous');
+            }
+
+            $response = [
                 'comment' => [
                     'id' => $comment->id,
                     'content' => $comment->comment_content,
-                    'user' => $comment->user ? [
-                        'id' => $comment->user->id,
-                        'name' => $comment->user->name ?? $comment->user->first_name . ' ' . $comment->user->last_name,
-                        'email' => $comment->user->email,
-                        'avatar' => null, // Add avatar URL if available
-                    ] : [
-                        'name' => 'Anonymous',
-                        'avatar' => null,
-                    ],
+                    'user' => $userData,
                     'created_at' => $comment->created_at->toISOString(),
                     'is_edited' => false,
                     'reply_count' => 0,
+                    'replies' => [],
                 ],
-            ], 'Comment added successfully');
+            ];
+
+            Log::info('[ADD COMMENT] Success response prepared', [
+                'comment_id' => $comment->id,
+                'response_user_name' => $response['comment']['user']['name'],
+            ]);
+
+            return $this->successResponse($response, 'Comment added successfully');
+            
         } catch (\Exception $e) {
+            Log::error('[ADD COMMENT] Exception occurred', [
+                'message' => $e->getMessage(),
+                'file' => $e->getFile(),
+                'line' => $e->getLine(),
+                'trace' => $e->getTraceAsString(),
+            ]);
+            
             return $this->errorResponse('Failed to add comment', 500, $e->getMessage());
         }
     }
-
     /**
      * Update a comment
      */
-    public function updateComment(Request $request, ArticleInteraction $comment)
+    public function updateComment(Request $request, $commentId)
     {
+        $comment = ArticleInteraction::find($commentId);
+        
+        if (!$comment) {
+            return $this->errorResponse('Comment not found', 404);
+        }
+
         if ($comment->interaction_type !== 'comment') {
             return $this->errorResponse('Invalid interaction type', 400);
         }
@@ -288,6 +432,7 @@ class ArticleInteractionController extends Controller
                 ],
             ], 'Comment updated successfully');
         } catch (\Exception $e) {
+            Log::error('Failed to update comment: ' . $e->getMessage());
             return $this->errorResponse('Failed to update comment', 500, $e->getMessage());
         }
     }
@@ -295,8 +440,14 @@ class ArticleInteractionController extends Controller
     /**
      * Delete a comment
      */
-    public function deleteComment(ArticleInteraction $comment)
+    public function deleteComment($commentId)
     {
+        $comment = ArticleInteraction::find($commentId);
+        
+        if (!$comment) {
+            return $this->errorResponse('Comment not found', 404);
+        }
+
         if ($comment->interaction_type !== 'comment') {
             return $this->errorResponse('Invalid interaction type', 400);
         }
@@ -313,6 +464,7 @@ class ArticleInteractionController extends Controller
 
             return $this->successResponse(null, 'Comment deleted successfully');
         } catch (\Exception $e) {
+            Log::error('Failed to delete comment: ' . $e->getMessage());
             return $this->errorResponse('Failed to delete comment', 500, $e->getMessage());
         }
     }
@@ -320,67 +472,159 @@ class ArticleInteractionController extends Controller
     /**
      * Get comments for an article
      */
-    public function getComments(Request $request, Article $article)
-    {
-        $perPage = $request->get('per_page', 20);
-        $page = $request->get('page', 1);
+ 
 
-        $comments = ArticleInteraction::where('article_id', $article->id)
-            ->where('interaction_type', 'comment')
-            ->whereNull('parent_comment_id')
-            ->with(['user', 'replies.user'])
-            ->orderBy('created_at', 'desc')
-            ->paginate($perPage, ['*'], 'page', $page);
+/**
+ * Get comments for an article
+ */
+public function getComments(Request $request, $articleId)
+{
+    // DEBUG: Log request start
+    Log::info('[GET COMMENTS] Request started', [
+        'article_id' => $articleId,
+        'page' => $request->get('page', 1),
+        'per_page' => $request->get('per_page', 20),
+    ]);
 
-        $formattedComments = $comments->through(function ($comment) {
-            return [
-                'id' => $comment->id,
-                'content' => $comment->comment_content,
-                'user' => $comment->user ? [
-                    'id' => $comment->user->id,
-                    'name' => $comment->user->name ?? $comment->user->first_name . ' ' . $comment->user->last_name,
-                    'email' => $comment->user->email,
-                    'avatar' => null,
-                ] : [
-                    'name' => 'Anonymous',
-                    'avatar' => null,
-                ],
-                'created_at' => $comment->created_at->toISOString(),
-                'is_edited' => $comment->is_edited,
-                'edited_at' => $comment->edited_at?->toISOString(),
-                'replies' => $comment->replies->map(function ($reply) {
-                    return [
-                        'id' => $reply->id,
-                        'content' => $reply->comment_content,
-                        'user' => $reply->user ? [
-                            'id' => $reply->user->id,
-                            'name' => $reply->user->name ?? $reply->user->first_name . ' ' . $reply->user->last_name,
-                            'email' => $reply->user->email,
-                            'avatar' => null,
-                        ] : [
-                            'name' => 'Anonymous',
-                            'avatar' => null,
-                        ],
-                        'created_at' => $reply->created_at->toISOString(),
-                        'is_edited' => $reply->is_edited,
-                        'edited_at' => $reply->edited_at?->toISOString(),
-                    ];
-                }),
-                'reply_count' => $comment->replies->count(),
-            ];
-        });
-
-        return $this->successResponse([
-            'comments' => $formattedComments,
-            'pagination' => [
-                'current_page' => $comments->currentPage(),
-                'per_page' => $comments->perPage(),
-                'total' => $comments->total(),
-                'last_page' => $comments->lastPage(),
-            ],
-        ], 'Comments retrieved successfully');
+    $article = $this->findArticle($articleId);
+    if (!$article) {
+        Log::warning('[GET COMMENTS] Article not found', ['article_id' => $articleId]);
+        return $this->errorResponse('Article not found', 404);
     }
 
+    // DEBUG: Authentication status for this request
+    Log::info('[GET COMMENTS] Authentication check', [
+        'auth_check' => Auth::check(),
+        'auth_id' => Auth::id(),
+        'bearer_token' => $request->bearerToken(),
+        'has_bearer_token' => !empty($request->bearerToken()),
+        'authorization_header' => $request->header('Authorization') ? 'present' : 'missing',
+        'sanctum_check' => Auth::guard('sanctum')->check(),
+        'sanctum_id' => Auth::guard('sanctum')->id(),
+    ]);
+
+    $perPage = $request->get('per_page', 20);
+    $page = $request->get('page', 1);
+
+    $comments = ArticleInteraction::where('article_id', $article->id)
+        ->where('interaction_type', 'comment')
+        ->whereNull('parent_comment_id')
+        ->with(['user', 'replies.user'])
+        ->orderBy('created_at', 'desc')
+        ->paginate($perPage, ['*'], 'page', $page);
+
+    Log::info('[GET COMMENTS] Comments retrieved', [
+        'total_comments' => $comments->total(),
+        'current_page' => $comments->currentPage(),
+        'per_page' => $comments->perPage(),
+        'items_count' => $comments->count(),
+    ]);
+
+    // Get authenticated user if any (but don't require it)
+    $currentUserId = null;
+    if (Auth::guard('sanctum')->check()) {
+        $currentUserId = Auth::id();
+        Log::info('[GET COMMENTS] Authenticated user found', ['user_id' => $currentUserId]);
+    } else {
+        Log::info('[GET COMMENTS] No authenticated user for this request');
+    }
+
+    $formattedComments = collect($comments->items())->map(function ($comment) use ($currentUserId) {
+        // Format main comment user data
+        $userData = [];
+        if ($comment->user) {
+            $displayName = '';
+            if ($comment->user->first_name) {
+                $displayName = trim($comment->user->first_name . ' ' . ($comment->user->last_name ?? ''));
+            } elseif ($comment->user->name) {
+                $displayName = $comment->user->name;
+            } else {
+                $displayName = $comment->user->email;
+            }
+            
+            $userData = [
+                'id' => $comment->user->id,
+                'name' => $displayName,
+                'email' => $comment->user->email,
+                'avatar' => null,
+            ];
+        } else {
+            $userData = [
+                'id' => null,
+                'name' => 'Anonymous',
+                'email' => null,
+                'avatar' => null,
+            ];
+        }
+
+        $isOwner = $currentUserId && $comment->user_id === $currentUserId;
+
+        return [
+            'id' => $comment->id,
+            'content' => $comment->comment_content,
+            'user' => $userData,
+            'is_owner' => $isOwner,
+            'created_at' => $comment->created_at->toISOString(),
+            'is_edited' => $comment->is_edited,
+            'edited_at' => $comment->edited_at?->toISOString(),
+            'replies' => $comment->replies->map(function ($reply) use ($currentUserId) {
+                $replyUserData = [];
+                if ($reply->user) {
+                    $replyDisplayName = '';
+                    if ($reply->user->first_name) {
+                        $replyDisplayName = trim($reply->user->first_name . ' ' . ($reply->user->last_name ?? ''));
+                    } elseif ($reply->user->name) {
+                        $replyDisplayName = $reply->user->name;
+                    } else {
+                        $replyDisplayName = $reply->user->email;
+                    }
+                    
+                    $replyUserData = [
+                        'id' => $reply->user->id,
+                        'name' => $replyDisplayName,
+                        'email' => $reply->user->email,
+                        'avatar' => null,
+                    ];
+                } else {
+                    $replyUserData = [
+                        'id' => null,
+                        'name' => 'Anonymous',
+                        'email' => null,
+                        'avatar' => null,
+                    ];
+                }
+                
+                $isReplyOwner = $currentUserId && $reply->user_id === $currentUserId;
+                
+                return [
+                    'id' => $reply->id,
+                    'content' => $reply->comment_content,
+                    'user' => $replyUserData,
+                    'is_owner' => $isReplyOwner,
+                    'created_at' => $reply->created_at->toISOString(),
+                    'is_edited' => $reply->is_edited,
+                    'edited_at' => $reply->edited_at?->toISOString(),
+                ];
+            }),
+            'reply_count' => $comment->replies->count(),
+        ];
+    })->toArray();
+
+    Log::info('[GET COMMENTS] Response prepared', [
+        'formatted_comments_count' => count($formattedComments),
+        'has_owner_flags' => !is_null($currentUserId),
+    ]);
+
+    return $this->successResponse([
+        'comments' => $formattedComments,
+        'pagination' => [
+            'current_page' => $comments->currentPage(),
+            'per_page' => $comments->perPage(),
+            'total' => $comments->total(),
+            'last_page' => $comments->lastPage(),
+        ],
+    ], 'Comments retrieved successfully');
+}
     /**
      * Get user's liked articles
      */
@@ -428,8 +672,13 @@ class ArticleInteractionController extends Controller
     /**
      * Get interaction counts for an article
      */
-    public function getInteractionCounts(Article $article)
+    public function getInteractionCounts($articleId)
     {
+        $article = $this->findArticle($articleId);
+        if (!$article) {
+            return $this->errorResponse('Article not found', 404);
+        }
+
         $userId = Auth::id();
         $sessionId = session()->getId();
 
