@@ -54,6 +54,18 @@ Route::prefix('v1')->group(function () {
         Route::get('{article}/analytics', 'analytics');
     });
     
+    // Article Interactions Routes
+    Route::prefix('articles')->controller(ArticleInteractionController::class)->group(function () {
+        Route::post('{article}/view', 'recordView');
+        Route::post('{article}/like/toggle', 'toggleLike');
+        Route::post('{article}/share', 'recordShare');
+        Route::post('{article}/bookmark/toggle', 'toggleBookmark');
+        Route::post('{article}/comments', 'addComment');
+        Route::put('comments/{comment}', 'updateComment');
+        Route::delete('comments/{comment}', 'deleteComment');
+        Route::get('{article}/comments', 'getComments');
+        Route::get('{article}/interactions/counts', 'getInteractionCounts');
+    });
     // Public category routes
     Route::get('categories', [CategoryController::class, 'index']);
     Route::get('categories/{category}', [CategoryController::class, 'show']);
@@ -173,4 +185,12 @@ Route::prefix('v1')->group(function () {
         Route::post('preferences', 'getPreferences');
         Route::put('preferences', 'updatePreferences');
     });
+});
+
+
+
+// User-specific interaction routes (protected)
+Route::prefix('user')->middleware(['auth:sanctum'])->controller(ArticleInteractionController::class)->group(function () {
+    Route::get('likes', 'getUserLikes');
+    Route::get('bookmarks', 'getUserBookmarks');
 });

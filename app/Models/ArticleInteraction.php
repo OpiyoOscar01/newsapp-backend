@@ -1,26 +1,18 @@
 <?php
+// app/Models/ArticleInteraction.php
 
 namespace App\Models;
 
-use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
-use Illuminate\Database\Eloquent\Builder;
 
-/**
- * Article Interaction Model
- * 
- * Tracks user interactions with articles for analytics
- */
 class ArticleInteraction extends Model
 {
     use HasFactory;
 
-    /**
-     * The attributes that are mass assignable.
-     *
-     * @var array<int, string>
-     */
+    protected $table = 'article_interactions';
+
     protected $fillable = [
         'article_id',
         'user_id',
@@ -31,49 +23,80 @@ class ArticleInteraction extends Model
         'referrer',
         'metadata',
         'interaction_date',
+        'comment_content',
+        'parent_comment_id',
+        'is_edited',
+        'edited_at',
     ];
 
-    /**
-     * The attributes that should be cast.
-     *
-     * @var array<string, string>
-     */
     protected $casts = [
         'metadata' => 'array',
         'interaction_date' => 'datetime',
-        'created_at' => 'datetime',
-        'updated_at' => 'datetime',
+        'edited_at' => 'datetime',
+        'is_edited' => 'boolean',
     ];
 
-    /**
-     * Get the article this interaction belongs to
-     */
+    // Relationships
     public function article(): BelongsTo
     {
         return $this->belongsTo(Article::class);
     }
 
-    /**
-     * Scope to filter by interaction type
-     */
-    public function scopeByType(Builder $query, string $type): Builder
+    public function user(): BelongsTo
     {
-        return $query->where('interaction_type', $type);
+        return $this->belongsTo(User::class);
     }
 
-    /**
-     * Scope to get today's interactions
-     */
-    public function scopeToday(Builder $query): Builder
+    public function parentComment(): BelongsTo
     {
-        return $query->whereDate('interaction_date', today());
+        return $this->belongsTo(ArticleInteraction::class, 'parent_comment_id');
     }
 
-    /**
-     * Scope to get interactions from the last N days
-     */
-    public function scopeLastDays(Builder $query, int $days): Builder
+    public function replies()
     {
-        return $query->where('interaction_date', '>=', now()->subDays($days));
+        return $this->hasMany(ArticleInteraction::class, 'parent_comment_id')->where('interaction_type', 'comment');
+    }
+
+    // Scopes
+    public function scopeLikes($query)
+    {
+        return $query->where('interaction_type', 'like');
+    }
+
+    public function scopeShares($query)
+    {
+        return $query->where('interaction_type', 'share');
+    }
+
+    public function scopeViews($query)
+    {
+        return $query->where('interaction_type', 'view');
+    }
+
+    public function scopeBookmarks($query)
+    {
+        return $query->where('interaction_type', 'bookmark');
+    }
+
+    public function scopeComments($query)
+    {
+        return $query->where('interaction_type', 'comment')
+                     ->whereNull('parent_comment_id');
+    }
+
+    // Helper methods
+    public function isLike(): bool
+    {
+        return $this->interaction_type === 'like';
+    }
+
+    public function isComment(): bool
+    {
+        return $this->interaction_type === 'comment';
+    }
+
+    public function getCommentContentAttribute($value)
+    {
+        return $value ?? ($this->metadata['comment'] ?? null);
     }
 }
