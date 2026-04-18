@@ -4,18 +4,14 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\VisitorLog;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Carbon;
 
 class AnalyticsController extends Controller
 {
-
-    /**
-     * Track visitor data
-     */
-    public function trackVisitor(Request $request)
+    public function trackVisitor(Request $request): JsonResponse
     {
         $validated = $request->validate([
             'sessionId' => 'required|string',
@@ -33,13 +29,11 @@ class AnalyticsController extends Controller
             'location.timezone' => 'nullable|string',
             'categorySlug' => 'nullable|string',
             'articleId' => 'nullable|string',
-            'additionalData' => 'nullable|array'
+            'additionalData' => 'nullable|array',
         ]);
 
-        // Extract location data
         $location = $validated['location'] ?? [];
-        
-        // Create visitor log
+
         $visitorLog = VisitorLog::create([
             'session_id' => $validated['sessionId'],
             'unique_visitor_id' => $validated['uniqueVisitorId'] ?? null,
@@ -59,38 +53,91 @@ class AnalyticsController extends Controller
             'additional_data' => $validated['additionalData'] ?? null,
         ]);
 
-        // Clear relevant cache
         $this->clearAnalyticsCache();
 
         return response()->json([
             'success' => true,
-            'message' => 'Visitor data tracked successfully',
-            'data' => $visitorLog
+            'message' => 'Visitor data tracked successfully.',
+            'data' => $visitorLog,
         ], 201);
     }
 
-    /**
-     * Get visitor statistics
-     */
-    public function getVisitorStats(Request $request)
+    public function getVisitorStats(Request $request): JsonResponse
     {
-        $days = $request->input('days', 7);
+        $days = max(1, min((int) $request->input('days', 7), 365));
         $cacheKey = "visitor_stats_{$days}_days";
-        
-        // Return cached data if available
-        if (Cache::has($cacheKey)) {
-            return response()->json([
-                'success' => true,
-                'data' => Cache::get($cacheKey)
-            ]);
-        }
 
-        // Filter data by date range
-        $recentData = VisitorLog::dateRange($days)->get();
+        $stats = Cache::remember($cacheKey, now()->addMinutes(5), function () use ($days) {
+            return [
+                'totalVisits' => VisitorLog::dateRange($days)->count(),
+                'uniqueVisitors' => $this->getUniqueVisitors($days),
+                'pageViews' => $this->getPageViews($days),
+                'referrerStats' => $this->getReferrerStats($days),
+                'deviceStats' => $this->getDeviceStats($days),
+                'topPages' => $this->getTopPages($days),
+                'topCategories' => $this->getTopCategories($days),
+                'topArticles' => $this->getTopArticles($days),
+                'visitsByHour' => $this->getVisitsByHour($days),
+                'visitsByDay' => $this->getVisitsByDay($days),
+            ];
+        });
 
-        // Calculate statistics
+        return response()->json([
+            'success' => true,
+            'data' => $stats,
+        ]);
+    }
+
+    public function getRealtimeVisitors(): JsonResponse
+    {
+        $todayStart = now()->startOfDay();
+
+        $visitors = VisitorLog::query()
+            ->where('created_at', '>=', $todayStart)
+            ->selectRaw('COUNT(*) as total_today')
+            ->selectRaw("COUNT(DISTINCT COALESCE(NULLIF(unique_visitor_id, ''), session_id)) as unique_today")
+            ->first();
+
+        $activeNow = VisitorLog::query()
+            ->where('created_at', '>=', now()->subMinutes(5))
+            ->selectRaw("COUNT(DISTINCT COALESCE(NULLIF(unique_visitor_id, ''), session_id)) as active_now")
+            ->value('active_now');
+
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'total_today' => (int) ($visitors->total_today ?? 0),
+                'unique_today' => (int) ($visitors->unique_today ?? 0),
+                'active_now' => (int) ($activeNow ?? 0),
+            ],
+        ]);
+    }
+
+    public function getRecentVisitorEvents(Request $request): JsonResponse
+    {
+        $limit = max(1, min((int) $request->input('limit', 20), 100));
+
+        $events = VisitorLog::query()
+            ->latest('created_at')
+            ->limit($limit)
+            ->get();
+
+        return response()->json([
+            'success' => true,
+            'data' => $events,
+        ]);
+    }
+
+    public function exportVisitorData(Request $request): JsonResponse
+    {
+        $days = max(1, min((int) $request->input('days', 30), 365));
+
+        $data = VisitorLog::dateRange($days)
+            ->orderByDesc('created_at')
+            ->get();
+
         $stats = [
-            'totalVisits' => $recentData->count(),
+            'totalVisits' => VisitorLog::dateRange($days)->count(),
             'uniqueVisitors' => $this->getUniqueVisitors($days),
             'pageViews' => $this->getPageViews($days),
             'referrerStats' => $this->getReferrerStats($days),
@@ -102,106 +149,92 @@ class AnalyticsController extends Controller
             'visitsByDay' => $this->getVisitsByDay($days),
         ];
 
-        // Cache for 5 minutes
-        Cache::put($cacheKey, $stats, now()->addMinutes(5));
-
-        return response()->json([
-            'success' => true,
-            'data' => $stats
-        ]);
-    }
-
-    /**
-     * Get real-time visitor count
-     */
-    public function getRealtimeVisitors()
-    {
-        $todayStart = now()->startOfDay();
-        
-        $visitors = VisitorLog::where('created_at', '>=', $todayStart)
-            ->select(DB::raw('COUNT(*) as total, COUNT(DISTINCT session_id) as unique_visitors'))
-            ->first();
-
-        $activeNow = VisitorLog::where('created_at', '>=', now()->subMinutes(5))
-            ->distinct('session_id')
-            ->count('session_id');
-
-        return response()->json([
-            'success' => true,
-            'data' => [
-                'total_today' => $visitors->total ?? 0,
-                'unique_today' => $visitors->unique_visitors ?? 0,
-                'active_now' => $activeNow
-            ]
-        ]);
-    }
-
-    /**
-     * Export visitor data
-     */
-    public function exportVisitorData(Request $request)
-    {
-        $days = $request->input('days', 30);
-        
-        $data = VisitorLog::dateRange($days)
-            ->orderBy('created_at', 'desc')
-            ->get();
-
-        $stats = Cache::get("visitor_stats_{$days}_days") ?? $this->getVisitorStats($request)->getData()->data;
-
         return response()->json([
             'success' => true,
             'data' => [
                 'raw_data' => $data,
                 'stats' => $stats,
                 'exported_at' => now()->toISOString(),
-                'time_range' => $days . ' days',
-                'total_records' => $data->count()
-            ]
+                'time_range' => "{$days} days",
+                'total_records' => $data->count(),
+            ],
         ]);
     }
 
-    /**
-     * Helper methods for statistics calculation
-     */
-    private function getUniqueVisitors($days): int
+    public function cleanupVisitorData(Request $request): JsonResponse
     {
-        return VisitorLog::dateRange($days)
-            ->distinct('session_id')
-            ->count('session_id');
+        $days = max(1, min((int) $request->input('days', 30), 3650));
+        $cutoff = now()->subDays($days);
+
+        $deletedCount = VisitorLog::query()
+            ->where('created_at', '<', $cutoff)
+            ->delete();
+
+        $this->clearAnalyticsCache();
+
+        return response()->json([
+            'success' => true,
+            'message' => "Deleted {$deletedCount} visitor analytics records older than {$days} days.",
+            'data' => [
+                'deleted_count' => $deletedCount,
+                'days' => $days,
+            ],
+        ]);
     }
 
-    private function getPageViews($days): array
+    private function getUniqueVisitors(int $days): int
     {
+        return (int) VisitorLog::dateRange($days)
+            ->selectRaw("COUNT(DISTINCT COALESCE(NULLIF(unique_visitor_id, ''), session_id)) as aggregate")
+            ->value('aggregate');
+    }
+
+    private function getPageViews(int $days): array
+    {
+        $rows = VisitorLog::dateRange($days)
+            ->select('page_type', DB::raw('COUNT(*) as total'))
+            ->groupBy('page_type')
+            ->pluck('total', 'page_type');
+
         return [
-            'landing' => VisitorLog::dateRange($days)->pageType('landing')->count(),
-            'category' => VisitorLog::dateRange($days)->pageType('category')->count(),
-            'article' => VisitorLog::dateRange($days)->pageType('article')->count(),
-            'other' => VisitorLog::dateRange($days)->pageType('other')->count(),
+            'landing' => (int) ($rows['landing'] ?? 0),
+            'category' => (int) ($rows['category'] ?? 0),
+            'article' => (int) ($rows['article'] ?? 0),
+            'other' => (int) ($rows['other'] ?? 0),
         ];
     }
 
-    private function getReferrerStats($days): array
+    private function getReferrerStats(int $days): array
     {
+        $rows = VisitorLog::dateRange($days)
+            ->select('referrer_type', DB::raw('COUNT(*) as total'))
+            ->groupBy('referrer_type')
+            ->pluck('total', 'referrer_type');
+
         return [
-            'direct' => VisitorLog::dateRange($days)->referrerType('direct')->count(),
-            'search' => VisitorLog::dateRange($days)->referrerType('search')->count(),
-            'social' => VisitorLog::dateRange($days)->referrerType('social')->count(),
-            'external' => VisitorLog::dateRange($days)->referrerType('external')->count(),
-            'internal' => VisitorLog::dateRange($days)->referrerType('internal')->count(),
+            'direct' => (int) ($rows['direct'] ?? 0),
+            'search' => (int) ($rows['search'] ?? 0),
+            'social' => (int) ($rows['social'] ?? 0),
+            'external' => (int) ($rows['external'] ?? 0),
+            'internal' => (int) ($rows['internal'] ?? 0),
         ];
     }
 
-    private function getDeviceStats($days): array
+    private function getDeviceStats(int $days): array
     {
+        $rows = VisitorLog::dateRange($days)
+            ->select('device_type', DB::raw('COUNT(*) as total'))
+            ->groupBy('device_type')
+            ->pluck('total', 'device_type');
+
         return [
-            'mobile' => VisitorLog::dateRange($days)->deviceType('mobile')->count(),
-            'tablet' => VisitorLog::dateRange($days)->deviceType('tablet')->count(),
-            'desktop' => VisitorLog::dateRange($days)->deviceType('desktop')->count(),
+            'mobile' => (int) ($rows['mobile'] ?? 0),
+            'tablet' => (int) ($rows['tablet'] ?? 0),
+            'desktop' => (int) ($rows['desktop'] ?? 0),
         ];
     }
 
-    private function getTopPages($days, $limit = 10): array
+    private function getTopPages(int $days, int $limit = 10): array
     {
         return VisitorLog::dateRange($days)
             ->select('page', DB::raw('COUNT(*) as views'))
@@ -209,69 +242,90 @@ class AnalyticsController extends Controller
             ->orderByDesc('views')
             ->limit($limit)
             ->get()
-            ->map(fn($item) => ['page' => $item->page, 'views' => $item->views])
+            ->map(fn ($item) => [
+                'page' => $item->page,
+                'views' => (int) $item->views,
+            ])
+            ->values()
             ->toArray();
     }
 
-    private function getTopCategories($days, $limit = 10): array
+    private function getTopCategories(int $days, int $limit = 10): array
     {
         return VisitorLog::dateRange($days)
             ->whereNotNull('category_slug')
+            ->where('category_slug', '!=', '')
             ->select('category_slug as category', DB::raw('COUNT(*) as views'))
             ->groupBy('category_slug')
             ->orderByDesc('views')
             ->limit($limit)
             ->get()
-            ->map(fn($item) => ['category' => $item->category, 'views' => $item->views])
+            ->map(fn ($item) => [
+                'category' => $item->category,
+                'views' => (int) $item->views,
+            ])
+            ->values()
             ->toArray();
     }
 
-    private function getTopArticles($days, $limit = 10): array
+    private function getTopArticles(int $days, int $limit = 10): array
     {
         return VisitorLog::dateRange($days)
             ->whereNotNull('article_id')
+            ->where('article_id', '!=', '')
             ->select('article_id', DB::raw('COUNT(*) as views'))
             ->groupBy('article_id')
             ->orderByDesc('views')
             ->limit($limit)
             ->get()
-            ->map(fn($item) => ['articleId' => $item->article_id, 'views' => $item->views])
+            ->map(fn ($item) => [
+                'articleId' => (string) $item->article_id,
+                'views' => (int) $item->views,
+            ])
+            ->values()
             ->toArray();
     }
 
-    private function getVisitsByHour($days): array
+    private function getVisitsByHour(int $days): array
     {
-        $hours = VisitorLog::dateRange($days)
-            ->select(DB::raw('HOUR(created_at) as hour'), DB::raw('COUNT(*) as count'))
+        $rows = VisitorLog::dateRange($days)
+            ->selectRaw('HOUR(created_at) as hour')
+            ->selectRaw('COUNT(*) as total')
             ->groupBy(DB::raw('HOUR(created_at)'))
             ->orderBy('hour')
-            ->get()
-            ->pluck('count', 'hour')
+            ->pluck('total', 'hour')
             ->toArray();
 
         $result = [];
-        for ($i = 0; $i < 24; $i++) {
-            $result[$i] = $hours[$i] ?? 0;
+        for ($hour = 0; $hour < 24; $hour++) {
+            $result[$hour] = (int) ($rows[$hour] ?? 0);
         }
 
         return $result;
     }
 
-    private function getVisitsByDay($days): array
+    private function getVisitsByDay(int $days): array
     {
-        return VisitorLog::dateRange($days)
-            ->select(DB::raw('DATE(created_at) as date'), DB::raw('COUNT(*) as count'))
+        $rows = VisitorLog::dateRange($days)
+            ->selectRaw('DATE(created_at) as date')
+            ->selectRaw('COUNT(*) as total')
             ->groupBy(DB::raw('DATE(created_at)'))
             ->orderBy('date')
-            ->get()
-            ->pluck('count', 'date')
+            ->pluck('total', 'date')
             ->toArray();
+
+        $result = [];
+        foreach ($rows as $date => $count) {
+            $result[$date] = (int) $count;
+        }
+
+        return $result;
     }
 
     private function clearAnalyticsCache(): void
     {
-        for ($i = 1; $i <= 365; $i++) {
-            Cache::forget("visitor_stats_{$i}_days");
+        for ($days = 1; $days <= 365; $days++) {
+            Cache::forget("visitor_stats_{$days}_days");
         }
     }
 }

@@ -4,13 +4,18 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
+use Illuminate\Database\Eloquent\Builder;
 
 class VisitorLog extends Model
 {
     use HasUuids;
 
     protected $table = 'visitor_logs';
-    
+
+    protected $primaryKey = 'id';
+    public $incrementing = false;
+    protected $keyType = 'string';
+
     protected $fillable = [
         'session_id',
         'unique_visitor_id',
@@ -27,39 +32,37 @@ class VisitorLog extends Model
         'category_slug',
         'article_id',
         'ip_address',
-        'additional_data'
+        'additional_data',
     ];
 
     protected $casts = [
         'additional_data' => 'array',
-        'created_at' => 'datetime'
+        'created_at' => 'datetime',
+        'updated_at' => 'datetime',
     ];
 
-    protected $primaryKey = 'id';
-    public $incrementing = false;
-    protected $keyType = 'string';
-
-    // Scope for filtering by date range
-    public function scopeDateRange($query, $days = 7)
+    public function scopeDateRange(Builder $query, int $days = 7): Builder
     {
-        return $query->where('created_at', '>=', now()->subDays($days));
+        return $query->where('created_at', '>=', now()->subDays($days)->startOfDay());
     }
 
-    // Scope for filtering by page type
-    public function scopePageType($query, $type)
+    public function scopePageType(Builder $query, string $type): Builder
     {
         return $query->where('page_type', $type);
     }
 
-    // Scope for filtering by device type
-    public function scopeDeviceType($query, $device)
+    public function scopeDeviceType(Builder $query, string $device): Builder
     {
         return $query->where('device_type', $device);
     }
 
-    // Scope for filtering by referrer type
-    public function scopeReferrerType($query, $referrer)
+    public function scopeReferrerType(Builder $query, string $referrer): Builder
     {
         return $query->where('referrer_type', $referrer);
+    }
+
+    public function scopeRecentActive(Builder $query, int $minutes = 5): Builder
+    {
+        return $query->where('created_at', '>=', now()->subMinutes($minutes));
     }
 }
