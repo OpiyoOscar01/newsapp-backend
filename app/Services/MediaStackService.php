@@ -6,6 +6,7 @@ use App\Models\Article;
 use App\Models\Source;
 use App\Models\Category;
 use App\Models\ApiFetchLog;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
@@ -23,6 +24,10 @@ class MediaStackService
     // Track fetched dates per request to avoid duplicates
     private static array $fetchedUrls = [];
 
+    // Cache key prefix for offset bookmarks
+    private const OFFSET_CACHE_PREFIX = 'mediastack_offset_';
+    private const OFFSET_TTL = 86400; // 24 hours
+
     public function __construct()
     {
         $this->apiKey = config('mediastack.api_key');
@@ -36,6 +41,26 @@ class MediaStackService
         ]);
         $this->timeout = config('mediastack.timeout', 60); // Increased timeout
         $this->retryConfig = config('mediastack.retry', ['times' => 3, 'sleep' => 100]);
+    }
+
+    /**
+     * Build a stable cache key from the filter params so each unique
+     * combination of filters gets its own offset bookmark.
+     */
+    private function offsetCacheKey(array $params): string
+    {
+        $filterKeys = ['categories', 'countries', 'languages', 'sources', 'keywords', 'sort', 'date'];
+        $fingerprint = [];
+
+        foreach ($filterKeys as $key) {
+            if (isset($params[$key])) {
+                $fingerprint[$key] = $params[$key];
+            }
+        }
+
+        ksort($fingerprint);
+
+        return self::OFFSET_CACHE_PREFIX . md5(json_encode($fingerprint));
     }
 
     /**
@@ -58,6 +83,26 @@ class MediaStackService
                 $params = $this->applyDeduplicationParams($params);
             }
 
+            // ── Resolve offset ──────────────────────────────────────────────
+            // If the caller provided an explicit offset, honour it and write
+            // it to the cache so the next call continues from there.
+            // Otherwise, read the cached bookmark (default 0).
+            $limit    = (int) ($params['limit'] ?? $this->defaultParams['limit'] ?? 100);
+            $cacheKey = $this->offsetCacheKey($params);
+
+            if (isset($params['offset'])) {
+                $offset = (int) $params['offset'];
+                Cache::put($cacheKey, $offset, self::OFFSET_TTL);
+            } elseif ($forceRefresh) {
+                $offset = 0;
+                Cache::put($cacheKey, 0, self::OFFSET_TTL);
+            } else {
+                $offset = (int) Cache::get($cacheKey, 0);
+            }
+
+            $params['offset'] = $offset;
+            $params['limit']  = $limit;
+
             // Merge with default parameters
             $queryParams = array_merge($this->defaultParams, $params, [
                 'access_key' => $this->apiKey,
@@ -71,8 +116,12 @@ class MediaStackService
             // Handle date parameters properly for MediaStack API
             $queryParams = $this->formatDateParameters($queryParams);
 
+            // Strip internal-only keys that must not reach the API
+            unset($queryParams['force_refresh'], $queryParams['page']);
+
             Log::info('Making MediaStack API request', [
-                'url' => $this->apiUrl,
+                'url'    => $this->apiUrl,
+                'offset' => $offset,
                 'params' => $queryParams
             ]);
 
@@ -94,7 +143,19 @@ class MediaStackService
             
             // Get stats for reporting
             $totalArticles = count($data['data'] ?? []);
-            $duplicates = $totalArticles - $processedCount;
+            $duplicates    = $totalArticles - $processedCount;
+
+            // ── Advance offset bookmark ─────────────────────────────────────
+            // If we got a full page, advance. If fewer than $limit came back
+            // we've reached the end — reset to 0 so the next run starts fresh.
+            $apiTotal   = (int) ($data['pagination']['total'] ?? 0);
+            $nextOffset = $offset + $totalArticles;
+
+            if ($totalArticles < $limit || ($apiTotal > 0 && $nextOffset >= $apiTotal)) {
+                Cache::put($cacheKey, 0, self::OFFSET_TTL); // reset for next run
+            } else {
+                Cache::put($cacheKey, $nextOffset, self::OFFSET_TTL);
+            }
             
             // Update fetch log
             $this->updateFetchLog($fetchLog, [
@@ -107,10 +168,11 @@ class MediaStackService
             ]);
             
             Log::info('News fetch from MediaStack completed', [
-                'fetched' => $totalArticles,
-                'processed' => $processedCount,
-                'duplicates' => $duplicates,
-                'offset' => $params['offset'] ?? 0,
+                'fetched'        => $totalArticles,
+                'processed'      => $processedCount,
+                'duplicates'     => $duplicates,
+                'offset_used'    => $offset,
+                'next_offset'    => Cache::get($cacheKey, 0),
                 'execution_time' => microtime(true) - $startTime
             ]);
 
