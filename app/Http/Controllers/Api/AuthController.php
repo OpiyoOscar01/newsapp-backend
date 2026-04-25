@@ -255,10 +255,10 @@ public function logout(Request $request)
 
         // Update user data
         if ($request->has('first_name')) {
-            $user->first_name = $request->first_name;
+             $request->first_name;
         }
         if ($request->has('last_name')) {
-            $user->last_name = $request->last_name;
+            $request->last_name;
         }
         if ($request->has('name')) {
             $user->name = $request->name;

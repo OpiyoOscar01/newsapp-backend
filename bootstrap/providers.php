@@ -5,4 +5,5 @@ return [
     App\Providers\NewsServiceProvider::class,
     App\Providers\RepositoryServiceProvider::class,
     App\Providers\RouteServiceProvider::class,
+    App\Providers\EventServiceProvider::class,
 ];

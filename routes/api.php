@@ -18,6 +18,8 @@ use App\Http\Controllers\Api\{
 use Illuminate\Support\Facades\Route;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
+use App\Http\Controllers\Api\PasswordResetController;
+
 
 /*
 |--------------------------------------------------------------------------
@@ -37,6 +39,11 @@ Route::prefix('v1')->group(function () {
         Route::post('register', 'register');
         Route::post('login', 'login');
     });
+
+    // Password Reset Routes (Public)
+    Route::post('/password-reset/send-link', [PasswordResetController::class, 'sendResetLink']);
+    Route::post('/password-reset/verify-token', [PasswordResetController::class, 'verifyToken']);
+    Route::post('/password-reset/reset', [PasswordResetController::class, 'resetPassword']);
 
     // ------------------------------------------------------------------------
     // News Routes (Public)
