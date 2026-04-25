@@ -30,7 +30,7 @@ class MediaStackController extends Controller
             'keywords' => 'nullable|string',
             'date' => 'nullable|date',
             'sort' => ['nullable', Rule::in(['published_desc', 'published_asc', 'popularity'])],
-            'limit' => 'nullable|integer|min:1|max:100',
+            'limit' => 'nullable|integer|min:1|max:1000',
             'offset' => 'nullable|integer|min:0',
             'force_refresh' => 'nullable|boolean', // Add option to bypass date filtering
         ]);
@@ -56,7 +56,7 @@ class MediaStackController extends Controller
     {
         $validated = $request->validate([
             'page' => 'nullable|integer|min:1',
-            'limit' => 'nullable|integer|min:1|max:100',
+            'limit' => 'nullable|integer|min:1|max:1000',
             'categories' => 'nullable|string',
             'sources' => 'nullable|string',
             'countries' => 'nullable|string',
@@ -66,7 +66,7 @@ class MediaStackController extends Controller
         ]);
 
         // Calculate offset from page
-        $limit = $validated['limit'] ?? 100;
+        $limit = $validated['limit'] ?? 1000;
         $page = $validated['page'] ?? 1;
         $offset = ($page - 1) * $limit;
 
@@ -106,14 +106,14 @@ class MediaStackController extends Controller
     public function fetchLatest(Request $request): JsonResponse
     {
         $validated = $request->validate([
-            'limit' => 'nullable|integer|min:1|max:100',
+            'limit' => 'nullable|integer|min:1|max:1000',
             'page' => 'nullable|integer|min:1',
             'categories' => 'nullable|string',
             'sources' => 'nullable|string',
             'countries' => 'nullable|string',
         ]);
 
-        $limit = $validated['limit'] ?? 100;
+        $limit = $validated['limit'] ?? 1000;
         $page = $validated['page'] ?? 1;
         $offset = ($page - 1) * $limit;
 
@@ -143,13 +143,13 @@ class MediaStackController extends Controller
     public function fetchByCategory(Request $request, string $category): JsonResponse
     {
         $validated = $request->validate([
-            'limit' => 'nullable|integer|min:1|max:100',
+            'limit' => 'nullable|integer|min:1|max:1000',
             'page' => 'nullable|integer|min:1',
             'sources' => 'nullable|string',
             'countries' => 'nullable|string',
         ]);
 
-        $limit = $validated['limit'] ?? 100;
+        $limit = $validated['limit'] ?? 1000;
         $page = $validated['page'] ?? 1;
         $offset = ($page - 1) * $limit;
 
@@ -185,11 +185,11 @@ class MediaStackController extends Controller
             'categories' => 'nullable|string',
             'sources' => 'nullable|string',
             'countries' => 'nullable|string',
-            'limit' => 'nullable|integer|min:1|max:100',
+            'limit' => 'nullable|integer|min:1|max:1000',
             'page' => 'nullable|integer|min:1',
         ]);
 
-        $limit = $validated['limit'] ?? 100;
+        $limit = $validated['limit'] ?? 1000;
         $page = $validated['page'] ?? 1;
         $offset = ($page - 1) * $limit;
 
