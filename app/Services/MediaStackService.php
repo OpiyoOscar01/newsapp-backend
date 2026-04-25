@@ -6,8 +6,6 @@ use App\Models\Article;
 use App\Models\Source;
 use App\Models\Category;
 use App\Models\ApiFetchLog;
-use Illuminate\Support\Facades\Cache;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
@@ -21,181 +19,120 @@ class MediaStackService
     private array $defaultParams;
     private int $timeout;
     private array $retryConfig;
-
-    /**
-     * Cache key prefix for storing fetch progress (offset bookmarks).
-     * Key format: mediastack_offset_{hash_of_filters}
-     */
-    private const OFFSET_CACHE_PREFIX = 'mediastack_offset_';
-
-    /**
-     * How long to remember an offset bookmark (seconds).
-     * 24 hours — long enough to survive cron gaps, short enough to reset stale state.
-     */
-    private const OFFSET_TTL = 86400;
+    
+    // Track fetched dates per request to avoid duplicates
+    private static array $fetchedUrls = [];
 
     public function __construct()
     {
-        $this->apiKey        = config('mediastack.api_key');
-        $this->apiUrl        = config('mediastack.api_url');
+        $this->apiKey = config('mediastack.api_key');
+        $this->apiUrl = config('mediastack.api_url');
         $this->defaultParams = config('mediastack.default_params', [
-            'limit'      => 100,
-            'languages'  => 'en',
-            'countries'  => 'us,gb,ca,au',
+            'limit' => 100,
+            'languages' => 'en',
+            'countries' => 'us,gb,ca,au',
             'categories' => 'general,business,entertainment,health,science,sports,technology',
-            'sort'       => 'published_desc',
+            'sort' => 'published_desc',
         ]);
-        $this->timeout     = config('mediastack.timeout', 60);
-        $this->retryConfig = config('mediastack.retry', ['times' => 3, 'sleep' => 1]);
+        $this->timeout = config('mediastack.timeout', 60); // Increased timeout
+        $this->retryConfig = config('mediastack.retry', ['times' => 3, 'sleep' => 100]);
     }
 
-    // -------------------------------------------------------------------------
-    // Public API
-    // -------------------------------------------------------------------------
-
     /**
-     * Fetch news from MediaStack and persist new articles.
-     *
-     * Offset is managed automatically via a Cache bookmark keyed on the
-     * canonical filter set, so repeated calls always advance forward rather
-     * than re-fetching the same window.
-     *
-     * Pass `force_refresh => true` to ignore the bookmark and reset to 0.
-     * Pass `offset => N`         to start at an explicit position (also resets bookmark).
+     * Fetch news from MediaStack API with deduplication logic
      */
     public function fetchNews(array $params = []): array
     {
-        $startTime    = microtime(true);
-        $forceRefresh = (bool) ($params['force_refresh'] ?? false);
-
-        // Remove internal-only keys before building the API query
-        unset($params['force_refresh']);
-
-        Log::info('MediaStack: initiating fetch', ['params' => $params]);
-
+        $startTime = microtime(true);
+        $forceRefresh = $params['force_refresh'] ?? false;
+        
+        Log::info('Initiating news fetch from MediaStack', [
+            'params' => $params
+        ]);
+        
         $fetchLog = $this->createFetchLog($params);
 
         try {
-            // ── 1. Resolve limit ────────────────────────────────────────────
-            $limit = (int) ($params['limit'] ?? $this->defaultParams['limit'] ?? 100);
-
-            // ── 2. Resolve offset ───────────────────────────────────────────
-            // Priority: explicit param > cache bookmark > 0
-            $cacheKey = $this->offsetCacheKey($params);
-
-            if ($forceRefresh || isset($params['offset'])) {
-                $offset = (int) ($params['offset'] ?? 0);
-                Cache::put($cacheKey, $offset, self::OFFSET_TTL);
-            } else {
-                $offset = (int) (Cache::get($cacheKey, 0));
+            // Apply deduplication logic unless force_refresh is true
+            if (!$forceRefresh) {
+                $params = $this->applyDeduplicationParams($params);
             }
 
-            $params['offset'] = $offset;
-            $params['limit']  = $limit;
-
-            // ── 3. Build query params ───────────────────────────────────────
+            // Merge with default parameters
             $queryParams = array_merge($this->defaultParams, $params, [
                 'access_key' => $this->apiKey,
             ]);
 
-            // Strip nulls / empty strings
-            $queryParams = array_filter($queryParams, fn($v) => !is_null($v) && $v !== '');
+            // Remove null/empty values
+            $queryParams = array_filter($queryParams, function($value) {
+                return !is_null($value) && $value !== '';
+            });
 
-            // Normalise date parameters to what MediaStack expects
+            // Handle date parameters properly for MediaStack API
             $queryParams = $this->formatDateParameters($queryParams);
 
-            // Remove keys that are not MediaStack API parameters
-            $apiOnlyParams = $this->stripInternalKeys($queryParams);
-
-            Log::info('MediaStack: sending request', [
-                'offset' => $offset,
-                'limit'  => $limit,
-                'params' => $apiOnlyParams,
+            Log::info('Making MediaStack API request', [
+                'url' => $this->apiUrl,
+                'params' => $queryParams
             ]);
 
-            // ── 4. Call API ─────────────────────────────────────────────────
-            $response = $this->makeApiRequest($apiOnlyParams);
-
+            // Make API request with retry logic
+            $response = $this->makeApiRequest($queryParams);
+            
             if (!$response->successful()) {
                 throw new Exception("API request failed with status: {$response->status()}");
             }
 
             $data = $response->json();
-
+            
             if (isset($data['error'])) {
                 throw new Exception("MediaStack API Error: {$data['error']['message']}");
             }
 
-            $rawArticles  = $data['data'] ?? [];
-            $apiTotal     = (int) ($data['pagination']['total'] ?? 0);
-            $receivedCount = count($rawArticles);
-
-            // ── 5. Persist articles ─────────────────────────────────────────
-            [$processedCount, $skippedCount] = $this->processArticles($rawArticles);
-
-            // ── 6. Advance bookmark ─────────────────────────────────────────
-            //
-            // Only advance if MediaStack actually returned a full page.
-            // If it returned fewer than $limit items we have likely reached
-            // the end of available results — reset the bookmark to 0 so the
-            // next scheduled run starts fresh (new articles will have arrived).
-            //
-            $nextOffset = $offset + $receivedCount;
-
-            if ($receivedCount < $limit || $nextOffset >= $apiTotal) {
-                // End of result set — reset for next run
-                Cache::put($cacheKey, 0, self::OFFSET_TTL);
-                $reachedEnd = true;
-            } else {
-                Cache::put($cacheKey, $nextOffset, self::OFFSET_TTL);
-                $reachedEnd = false;
-            }
-
-            // ── 7. Log & return ─────────────────────────────────────────────
-            $executionTime = microtime(true) - $startTime;
-
+            // Process and store articles with deduplication
+            $processedCount = $this->processArticles($data['data'] ?? []);
+            
+            // Get stats for reporting
+            $totalArticles = count($data['data'] ?? []);
+            $duplicates = $totalArticles - $processedCount;
+            
+            // Update fetch log
             $this->updateFetchLog($fetchLog, [
-                'status'            => 'success',
-                'articles_fetched'  => $receivedCount,
-                'articles_processed'=> $processedCount,
-                'duplicates_skipped'=> $skippedCount,
-                'api_response'      => $data,
-                'execution_time'    => $executionTime,
+                'status' => 'success',
+                'articles_fetched' => $totalArticles,
+                'articles_processed' => $processedCount,
+                'duplicates_skipped' => $duplicates,
+                'api_response' => $data,
+                'execution_time' => microtime(true) - $startTime,
             ]);
-
-            Log::info('MediaStack: fetch complete', [
-                'offset_used'   => $offset,
-                'next_offset'   => $reachedEnd ? 0 : $nextOffset,
-                'received'      => $receivedCount,
-                'processed'     => $processedCount,
-                'skipped'       => $skippedCount,
-                'api_total'     => $apiTotal,
-                'reached_end'   => $reachedEnd,
-                'execution_time'=> round($executionTime, 2),
+            
+            Log::info('News fetch from MediaStack completed', [
+                'fetched' => $totalArticles,
+                'processed' => $processedCount,
+                'duplicates' => $duplicates,
+                'offset' => $params['offset'] ?? 0,
+                'execution_time' => microtime(true) - $startTime
             ]);
 
             return [
-                'success'            => true,
-                'articles_fetched'   => $receivedCount,
+                'success' => true,
+                'articles_fetched' => $totalArticles,
                 'articles_processed' => $processedCount,
-                'duplicates_skipped' => $skippedCount,
-                'offset_used'        => $offset,
-                'next_offset'        => $reachedEnd ? 0 : $nextOffset,
-                'reached_end'        => $reachedEnd,
-                'pagination'         => $data['pagination'] ?? null,
-                'fetch_params'       => $params,
+                'duplicates_skipped' => $duplicates,
+                'pagination' => $data['pagination'] ?? null,
+                'fetch_params' => $params,
             ];
 
         } catch (Exception $e) {
-            Log::error('MediaStack: fetch failed', [
-                'error'  => $e->getMessage(),
+            Log::error('MediaStack API fetch failed', [
+                'error' => $e->getMessage(),
                 'params' => $params,
-                'trace'  => $e->getTraceAsString(),
+                'trace' => $e->getTraceAsString(),
             ]);
 
             $this->updateFetchLog($fetchLog, [
-                'status'         => 'failed',
-                'error_message'  => $e->getMessage(),
+                'status' => 'failed',
+                'error_message' => $e->getMessage(),
                 'execution_time' => microtime(true) - $startTime,
             ]);
 
@@ -204,459 +141,349 @@ class MediaStackService
     }
 
     /**
-     * Fetch all pages for a given filter set in a single call.
-     * Useful for backfill commands — not for scheduled fetches.
+     * Format date parameters correctly for MediaStack API
      */
-    public function fetchAllPages(array $params = [], int $maxPages = 10): array
+    private function formatDateParameters(array $params): array
     {
-        $aggregated = [
-            'articles_fetched'   => 0,
-            'articles_processed' => 0,
-            'duplicates_skipped' => 0,
-            'pages_fetched'      => 0,
-        ];
-
-        for ($page = 1; $page <= $maxPages; $page++) {
-            $result = $this->fetchNews(array_merge($params, [
-                'offset'        => ($page - 1) * ($params['limit'] ?? 100),
-                'force_refresh' => true, // explicit offset overrides bookmark
-            ]));
-
-            $aggregated['articles_fetched']   += $result['articles_fetched'];
-            $aggregated['articles_processed'] += $result['articles_processed'];
-            $aggregated['duplicates_skipped'] += $result['duplicates_skipped'];
-            $aggregated['pages_fetched']++;
-
-            if ($result['reached_end']) {
-                break;
+        // MediaStack expects date in YYYY-MM-DD format
+        if (isset($params['date'])) {
+            // If it's a full datetime, extract just the date part
+            if (strpos($params['date'], ' ') !== false) {
+                $params['date'] = explode(' ', $params['date'])[0];
             }
         }
 
-        return $aggregated;
-    }
-
-    /**
-     * Convenience wrapper used by MediaStackController::fetchPaginated().
-     * Delegates entirely to fetchNews(); offset is auto-managed.
-     */
-    public function fetchNewsWithPagination(int $page = 1, int $limit = 100, array $filters = []): array
-    {
-        // When the caller provides an explicit page, honour it by computing
-        // the offset directly (bypasses the cache bookmark).
-        $offset = ($page - 1) * $limit;
-
-        $result          = $this->fetchNews(array_merge($filters, [
-            'limit'         => $limit,
-            'offset'        => $offset,
-            'force_refresh' => true,
-        ]));
-        $result['page']     = $page;
-        $result['has_more'] = !$result['reached_end'];
-
-        return $result;
-    }
-
-    // -------------------------------------------------------------------------
-    // Offset bookmark helpers
-    // -------------------------------------------------------------------------
-
-    /**
-     * Build a stable cache key from the filter set so that different
-     * category/country/language combinations each get their own bookmark.
-     */
-    private function offsetCacheKey(array $params): string
-    {
-        // Only stable filter keys matter — not limit/offset/force_refresh
-        $filterKeys = ['categories', 'countries', 'languages', 'sources', 'keywords', 'sort', 'date'];
-        $fingerprint = [];
-
-        foreach ($filterKeys as $key) {
-            if (isset($params[$key])) {
-                $fingerprint[$key] = $params[$key];
-            }
+        // Handle date range
+        if (isset($params['date_from']) && isset($params['date_to'])) {
+            $params['date'] = $params['date_from'] . ',' . $params['date_to'];
+            unset($params['date_from']);
+            unset($params['date_to']);
+        } elseif (isset($params['date']) && isset($params['date_to'])) {
+            $params['date'] = $params['date'] . ',' . $params['date_to'];
+            unset($params['date_to']);
         }
 
-        ksort($fingerprint);
+        // Remove date_search if present (MediaStack doesn't support it directly)
+        unset($params['date_search']);
 
-        return self::OFFSET_CACHE_PREFIX . md5(json_encode($fingerprint));
+        return $params;
     }
 
     /**
-     * Reset the offset bookmark for a given filter set (or all bookmarks).
+     * Apply deduplication parameters to avoid fetching same articles
      */
-    public function resetFetchTracker(array $params = []): void
+    private function applyDeduplicationParams(array $params): array
     {
-        if (empty($params)) {
-            // Flush all offset bookmarks — crude but safe for "reset everything"
-            Cache::flush();
-            Log::info('MediaStack: all offset bookmarks cleared');
+        // If date is explicitly provided, respect it
+        if (isset($params['date'])) {
+            return $params;
+        }
+
+        // Get the latest published date from existing articles
+        $latestArticle = Article::whereNotNull('published_at')
+            ->orderBy('published_at', 'desc')
+            ->first();
+
+        if ($latestArticle) {
+            // Get just the date part in YYYY-MM-DD format
+            $latestDate = $latestArticle->published_at->format('Y-m-d');
+            
+            // Set date filter to fetch from this date onward
+            $params['date'] = $latestDate;
+            
+            Log::info('Auto-applying date filter to avoid duplicates', [
+                'date_from' => $params['date']
+            ]);
         } else {
-            $cacheKey = $this->offsetCacheKey($params);
-            Cache::forget($cacheKey);
-            Log::info('MediaStack: offset bookmark cleared', ['cache_key' => $cacheKey]);
+            Log::info('No existing articles, fetching latest');
         }
+
+        return $params;
     }
 
-    // -------------------------------------------------------------------------
-    // Article processing
-    // -------------------------------------------------------------------------
-
     /**
-     * Bulk-insert new articles, skipping any whose URL already exists.
-     *
-     * Returns [processedCount, skippedCount].
+     * Process and store articles with enhanced deduplication
      */
-    private function processArticles(array $articles): array
+    private function processArticles(array $articles): int
     {
-        if (empty($articles)) {
-            return [0, 0];
+        $processedCount = 0;
+        $skippedCount = 0;
+        $existingUrls = [];
+
+        // Pre-fetch existing URLs for batch checking (performance optimization)
+        $urls = array_column($articles, 'url');
+        if (!empty($urls)) {
+            $existingUrls = Article::whereIn('url', $urls)
+                ->pluck('url')
+                ->flip()
+                ->toArray();
         }
-
-        // ── Batch-load existing URLs in one query ───────────────────────────
-        $incomingUrls = array_values(array_filter(array_column($articles, 'url')));
-
-        $existingUrls = Article::whereIn('url', $incomingUrls)
-            ->pluck('url')
-            ->flip() // url => index, O(1) lookup
-            ->toArray();
-
-        // ── Prepare rows for bulk insert ────────────────────────────────────
-        $toInsert = [];
-        $skipped  = 0;
-        $now      = now()->toDateTimeString();
 
         foreach ($articles as $articleData) {
-            $url = $articleData['url'] ?? null;
+            try {
+                $url = $articleData['url'] ?? null;
+                
+                // Skip if URL is missing
+                if (!$url) {
+                    Log::warning('Article missing URL, skipping', ['article' => $articleData]);
+                    continue;
+                }
 
-            if (!$url) {
-                Log::warning('MediaStack: article missing URL, skipping', ['data' => $articleData]);
-                $skipped++;
-                continue;
+                // Skip if already processed in this batch
+                if (isset(self::$fetchedUrls[$url])) {
+                    $skippedCount++;
+                    continue;
+                }
+
+                // Skip if already exists in database
+                if (isset($existingUrls[$url])) {
+                    self::$fetchedUrls[$url] = true;
+                    $skippedCount++;
+                    continue;
+                }
+
+                Log::debug('Processing article', [
+                    'title' => $articleData['title'] ?? 'unknown',
+                    'url' => $url
+                ]);
+
+                // Get or create source
+                $source = $this->getOrCreateSource($articleData);
+
+                // Get or create category
+                $categoryName = $articleData['category'] ?? 'general';
+                $category = $this->getOrCreateCategory($categoryName);
+
+                // Prepare article data
+                $processedData = $this->prepareArticleData($articleData, $source, $category);
+
+                // Create article
+                Article::create($processedData);
+                
+                // Track in memory to avoid duplicates in same batch
+                self::$fetchedUrls[$url] = true;
+                $processedCount++;
+
+            } catch (\Throwable $e) {
+                Log::error('Failed to process article', [
+                    'url'   => $articleData['url'] ?? 'unknown',
+                    'title' => $articleData['title'] ?? 'unknown',
+                    'error' => $e->getMessage(),
+                    'exception' => get_class($e),
+                ]);
             }
-
-            if (isset($existingUrls[$url])) {
-                $skipped++;
-                continue;
-            }
-
-            // Mark as seen within this batch to handle dupes inside the same response
-            $existingUrls[$url] = true;
-
-            $toInsert[] = ['data' => $articleData];
         }
 
-        if (empty($toInsert)) {
-            return [0, $skipped];
-        }
-
-        // ── Generate unique slugs without per-row DB hits ───────────────────
-        $slugs = $this->generateUniqueSlugs(array_column($toInsert, 'data'));
-
-        // ── Build final rows ────────────────────────────────────────────────
-        $rows = [];
-
-        foreach ($toInsert as $i => $item) {
-            $d = $item['data'];
-
-            $rows[] = [
-                'title'             => $d['title']       ?? 'Untitled',
-                'description'       => $d['description'] ?? null,
-                'content'           => $d['description'] ?? null,
-                'author'            => $d['author']      ?? null,
-                'url'               => $d['url'],
-                'source'            => $d['source']      ?? 'Unknown',
-                'image_url'         => $d['image']       ?? null,
-                'category'          => $d['category']    ?? 'general',
-                'language'          => $d['language']    ?? null,
-                'country'           => $d['country']     ?? null,
-                'published_at'      => isset($d['published_at'])
-                                         ? Carbon::parse($d['published_at'])->toDateTimeString()
-                                         : $now,
-                'slug'              => $slugs[$i],
-                'meta_description'  => Str::limit(strip_tags($d['description'] ?? ''), 160),
-                'is_active'         => true,
-                'is_featured'       => false,
-                'view_count'        => 0,
-                'processing_status' => 'pending',
-                'created_at'        => $now,
-                'updated_at'        => $now,
-            ];
-        }
-
-        // ── Bulk insert, ignoring any last-second URL duplicates ────────────
-        // insertOrIgnore skips rows that violate the unique index on `url`
-        // without throwing an exception — safe for concurrent fetches.
-        $inserted = 0;
-
-        // Insert in chunks to avoid hitting DB placeholder limits
-        foreach (array_chunk($rows, 50) as $chunk) {
-            $inserted += DB::table('articles')->insertOrIgnore($chunk);
-        }
-
-        $skipped += (count($rows) - $inserted);
-
-        Log::info('MediaStack: article processing complete', [
-            'received'  => count($articles),
-            'inserted'  => $inserted,
-            'skipped'   => $skipped,
+        Log::info('Article processing summary', [
+            'processed' => $processedCount,
+            'skipped_db_duplicates' => $skippedCount,
+            'total_received' => count($articles)
         ]);
 
-        return [$inserted, $skipped];
+        return $processedCount;
     }
 
     /**
-     * Generate unique slugs for a batch of articles in two DB queries.
+     * Make API request with retry logic and better SSL handling
      */
-    private function generateUniqueSlugs(array $articles): array
-    {
-        $baseSlug = fn(string $title) => Str::slug($title) ?: 'article';
-
-        $baseSlugs = array_map(fn($d) => $baseSlug($d['title'] ?? 'untitled'), $articles);
-
-        // Find all existing slugs that could conflict
-        $existing = Article::where(function ($q) use ($baseSlugs) {
-            foreach ($baseSlugs as $slug) {
-                $q->orWhere('slug', 'like', $slug . '%');
-            }
-        })->pluck('slug')->flip()->toArray();
-
-        $slugs   = [];
-        $used    = []; // tracks what we've assigned within this batch
-
-        foreach ($baseSlugs as $base) {
-            $candidate = $base;
-            $counter   = 1;
-
-            while (isset($existing[$candidate]) || isset($used[$candidate])) {
-                $candidate = $base . '-' . $counter;
-                $counter++;
-            }
-
-            $slugs[] = $candidate;
-            $used[$candidate] = true;
-        }
-
-        return $slugs;
-    }
-
-    // -------------------------------------------------------------------------
-    // Source / Category helpers
-    // -------------------------------------------------------------------------
-
-    /**
-     * Resolve multiple source names in two queries (one select, one insert).
-     *
-     * @param  string[] $names
-     * @return array<string, Source>  keyed by source name
-     */
-    private function bulkGetOrCreateSources(array $names): array
-    {
-        if (empty($names)) {
-            return [];
-        }
-
-        $mediastackIds = array_map(
-            fn($n) => strtolower(str_replace(' ', '_', $n)),
-            $names
-        );
-
-        // Fetch existing
-        $existing = Source::whereIn('mediastack_id', $mediastackIds)
-            ->get()
-            ->keyBy('name')
-            ->toArray();
-
-        $map = [];
-
-        foreach ($names as $name) {
-            if (isset($existing[$name])) {
-                $map[$name] = (object) $existing[$name];
-                continue;
-            }
-
-            // Create individually only for truly new sources (rare)
-            $map[$name] = Source::firstOrCreate(
-                ['mediastack_id' => strtolower(str_replace(' ', '_', $name))],
-                [
-                    'name'        => $name,
-                    'slug'        => Str::slug($name),
-                    'description' => "News source: {$name}",
-                    'is_active'   => true,
-                    'metadata'    => ['created_from_mediastack' => true],
-                ]
-            );
-        }
-
-        return $map;
-    }
-
-    /**
-     * Resolve multiple category names in two queries.
-     *
-     * @param  string[] $names
-     * @return array<string, Category>  keyed by category name
-     */
-    private function bulkGetOrCreateCategories(array $names): array
-    {
-        if (empty($names)) {
-            return [];
-        }
-
-        $existing = Category::whereIn('name', $names)
-            ->get()
-            ->keyBy('name')
-            ->toArray();
-
-        $map = [];
-
-        foreach ($names as $name) {
-            if (isset($existing[$name])) {
-                $map[$name] = (object) $existing[$name];
-                continue;
-            }
-
-            $map[$name] = Category::firstOrCreate(
-                ['name' => $name],
-                [
-                    'slug'        => Str::slug($name),
-                    'description' => "News category: {$name}",
-                    'is_active'   => true,
-                    'metadata'    => ['created_from_mediastack' => true],
-                ]
-            );
-        }
-
-        return $map;
-    }
-
-    // -------------------------------------------------------------------------
-    // HTTP
-    // -------------------------------------------------------------------------
-
     private function makeApiRequest(array $params)
     {
-        $maxAttempts   = $this->retryConfig['times'];
-        $sleepSeconds  = (int) ($this->retryConfig['sleep'] ?? 1);
+        $attempt = 0;
+        $maxAttempts = $this->retryConfig['times'];
         $lastException = null;
-        $response      = null;
 
-        for ($attempt = 1; $attempt <= $maxAttempts; $attempt++) {
+        do {
             try {
                 $response = Http::timeout($this->timeout)
                     ->withOptions([
-                        'verify'          => true,
-                        'connect_timeout' => 30,
-                        'read_timeout'    => 30,
+                        'verify' => true, // Enable SSL verification
+                        'connect_timeout' => 30, // Connection timeout
+                        'read_timeout' => 30, // Read timeout
                     ])
+                    ->retry(0) // Disable built-in retry, we'll handle it manually
                     ->get($this->apiUrl, $params);
 
                 if ($response->successful()) {
                     return $response;
                 }
 
+                // Handle rate limiting
                 if ($response->status() === 429) {
-                    $retryAfter = (int) $response->header('Retry-After', 5);
-                    Log::warning('MediaStack: rate limited', ['retry_after' => $retryAfter, 'attempt' => $attempt]);
+                    $retryAfter = $response->header('Retry-After', 5);
+                    Log::warning('Rate limited, waiting', ['retry_after' => $retryAfter]);
                     sleep($retryAfter);
                 } elseif ($response->status() >= 500) {
-                    Log::warning('MediaStack: server error', ['status' => $response->status(), 'attempt' => $attempt]);
-                    sleep($sleepSeconds);
-                } else {
-                    // 4xx client error — no point retrying
-                    break;
+                    // Server error, wait before retry
+                    Log::warning('Server error, retrying', ['status' => $response->status()]);
+                    sleep($this->retryConfig['sleep'] / 1000);
                 }
 
             } catch (Exception $e) {
                 $lastException = $e;
-                Log::warning('MediaStack: request attempt failed', [
-                    'attempt' => $attempt,
-                    'error'   => $e->getMessage(),
+                Log::warning('API request attempt failed', [
+                    'attempt' => $attempt + 1,
+                    'error' => $e->getMessage()
                 ]);
-
-                if ($attempt < $maxAttempts) {
-                    sleep($sleepSeconds);
+                
+                // Wait before retry
+                if ($attempt < $maxAttempts - 1) {
+                    sleep($this->retryConfig['sleep'] / 1000);
                 }
             }
-        }
 
+            $attempt++;
+        } while ($attempt < $maxAttempts);
+
+        // If we have an exception, throw it
         if ($lastException) {
             throw $lastException;
         }
 
-        return $response;
-    }
-
-    // -------------------------------------------------------------------------
-    // Parameter helpers
-    // -------------------------------------------------------------------------
-
-    /**
-     * Normalise date-related parameters to what MediaStack expects.
-     */
-    private function formatDateParameters(array $params): array
-    {
-        if (isset($params['date']) && str_contains((string) $params['date'], ' ')) {
-            $params['date'] = explode(' ', $params['date'])[0];
-        }
-
-        // Combine date_from + date_to into MediaStack's comma-separated format
-        if (isset($params['date_from']) && isset($params['date_to'])) {
-            $params['date'] = $params['date_from'] . ',' . $params['date_to'];
-            unset($params['date_from'], $params['date_to']);
-        } elseif (isset($params['date']) && isset($params['date_to'])) {
-            $params['date'] = $params['date'] . ',' . $params['date_to'];
-            unset($params['date_to']);
-        }
-
-        // Remove internal helper keys MediaStack doesn't know about
-        unset($params['date_search'], $params['date_from']);
-
-        return $params;
+        // Otherwise return the last response
+        return $response ?? Http::timeout($this->timeout)->get($this->apiUrl, $params);
     }
 
     /**
-     * Strip any keys that should never reach the MediaStack API.
+     * Prepare article data for storage
      */
-    private function stripInternalKeys(array $params): array
+    private function prepareArticleData(array $data, Source $source, Category $category): array
     {
-        $internal = ['force_refresh', 'page'];
-
-        return array_diff_key($params, array_flip($internal));
+        return [
+            'title' => $data['title'] ?? 'Untitled',
+            'description' => $data['description'] ?? null,
+            'content' => $data['description'] ?? null,
+            'url' => $data['url'],
+            'image_url' => $data['image'] ?? null,
+            'author' => $data['author'] ?? null,
+            'source' => $data['source'] ?? 'Unknown',
+            'category' => $data['category'] ?? 'general',
+            'country' => $data['country'] ?? null,
+            'language' => $data['language'] ?? null,
+            'published_at' => isset($data['published_at']) ? Carbon::parse($data['published_at']) : now(),
+            'slug' => $this->generateSlug($data['title'] ?? 'untitled'),
+            'source_id' => $source->id,
+            'category_id' => $category->id,
+            'is_active' => true,
+            'is_featured' => false,
+            'view_count' => 0,
+            'processing_status' => 'pending',
+            'metadata' => [
+                'mediastack_data' => $data,
+                'processed_at' => now()->toISOString(),
+            ],
+        ];
     }
 
-    // -------------------------------------------------------------------------
-    // Fetch log helpers
-    // -------------------------------------------------------------------------
+    /**
+     * Get or create source
+     */
+    private function getOrCreateSource(array $sourceData): Source
+    {
+        $sourceName = $sourceData['source'] ?? 'Unknown Source';
+        $mediastackId = $sourceData['id'] ?? strtolower(str_replace(' ', '_', $sourceName));
 
+        return Source::firstOrCreate(
+            ['mediastack_id' => $mediastackId],
+            [
+                'name' => $sourceName,
+                'slug' => Str::slug($sourceName),
+                'description' => "News source: {$sourceName}",
+                'is_active' => true,
+                'metadata' => ['created_from_mediastack' => true],
+            ]
+        );
+    }
+
+    /**
+     * Get or create category
+     */
+    private function getOrCreateCategory(string $categoryName): Category
+    {
+        return Category::firstOrCreate(
+            ['name' => $categoryName],
+            [
+                'slug' => Str::slug($categoryName),
+                'description' => "News category: {$categoryName}",
+                'is_active' => true,
+                'metadata' => ['created_from_mediastack' => true],
+            ]
+        );
+    }
+
+    /**
+     * Generate unique slug
+     */
+    private function generateSlug(string $title): string
+    {
+        $slug = Str::slug($title);
+        $originalSlug = $slug;
+        $counter = 1;
+
+        while (Article::where('slug', $slug)->exists()) {
+            $slug = $originalSlug . '-' . $counter;
+            $counter++;
+        }
+
+        return $slug;
+    }
+
+    /**
+     * Create fetch log entry
+     */
     private function createFetchLog(array $params): ApiFetchLog
     {
         return ApiFetchLog::create([
-            'api_endpoint'   => $this->apiUrl . '?access_key=' . Str::mask($this->apiKey, '*', 1, -4),
+            'api_endpoint' => $this->apiUrl . '?access_key=' . Str::mask($this->apiKey, '*', 1, -4),
             'request_params' => $params,
-            'status'         => 'running',
-            'started_at'     => now(),
+            'status' => 'running',
+            'started_at' => now(),
         ]);
     }
 
+    /**
+     * Update fetch log entry
+     */
     private function updateFetchLog(ApiFetchLog $log, array $data): void
     {
-        $log->update(array_merge($data, ['finished_at' => now()]));
+        $log->update(array_merge($data, [
+            'finished_at' => now(),
+        ]));
     }
 
-    // -------------------------------------------------------------------------
-    // Statistics & diagnostics
-    // -------------------------------------------------------------------------
+    /**
+     * Fetch news with pagination and track progress
+     */
+    public function fetchNewsWithPagination(int $page = 1, int $limit = 100, array $filters = []): array
+    {
+        $offset = ($page - 1) * $limit;
+        
+        $params = array_merge($filters, [
+            'limit' => $limit,
+            'offset' => $offset,
+        ]);
+        
+        $result = $this->fetchNews($params);
+        
+        // Add page info to result
+        $result['page'] = $page;
+        $result['has_more'] = ($result['pagination']['total'] ?? 0) > ($offset + $limit);
+        
+        return $result;
+    }
 
+    /**
+     * Get API usage statistics
+     */
     public function getUsageStats(): array
     {
         $logs = ApiFetchLog::where('created_at', '>=', now()->subDays(30))
             ->selectRaw('
-                DATE(created_at)          as date,
-                COUNT(*)                  as requests,
-                SUM(articles_fetched)     as total_articles,
-                SUM(articles_processed)   as processed_articles,
-                SUM(duplicates_skipped)   as duplicates_skipped,
-                AVG(execution_time)       as avg_execution_time
+                DATE(created_at) as date,
+                COUNT(*) as requests,
+                SUM(articles_fetched) as total_articles,
+                SUM(articles_processed) as processed_articles,
+                SUM(duplicates_skipped) as duplicates_skipped,
+                AVG(execution_time) as avg_execution_time
             ')
             ->groupBy('date')
             ->orderBy('date', 'desc')
@@ -665,68 +492,86 @@ class MediaStackService
         return [
             'daily_stats' => $logs,
             'summary' => [
-                'total_requests'           => $logs->sum('requests'),
-                'total_articles_fetched'   => $logs->sum('total_articles'),
+                'total_requests' => $logs->sum('requests'),
+                'total_articles_fetched' => $logs->sum('total_articles'),
                 'total_articles_processed' => $logs->sum('processed_articles'),
                 'total_duplicates_skipped' => $logs->sum('duplicates_skipped'),
-                'avg_execution_time'       => round($logs->avg('avg_execution_time'), 2),
+                'avg_execution_time' => round($logs->avg('avg_execution_time'), 2),
             ],
         ];
     }
 
+    /**
+     * Get database statistics
+     */
     public function getDatabaseStats(): array
     {
         return [
-            'total_articles'       => Article::count(),
+            'total_articles' => Article::count(),
             'articles_by_category' => Article::selectRaw('category, count(*) as count')
-                                        ->groupBy('category')
-                                        ->orderBy('count', 'desc')
-                                        ->get(),
-            'articles_by_source'   => Article::selectRaw('source, count(*) as count')
-                                        ->groupBy('source')
-                                        ->orderBy('count', 'desc')
-                                        ->limit(10)
-                                        ->get(),
-            'latest_article_date'  => Article::max('published_at'),
-            'oldest_article_date'  => Article::min('published_at'),
-            'articles_today'       => Article::whereDate('created_at', today())->count(),
-            'date_range_coverage'  => [
-                'from'       => Article::min('published_at'),
-                'to'         => Article::max('published_at'),
+                ->groupBy('category')
+                ->orderBy('count', 'desc')
+                ->get(),
+            'articles_by_source' => Article::selectRaw('source, count(*) as count')
+                ->groupBy('source')
+                ->orderBy('count', 'desc')
+                ->limit(10)
+                ->get(),
+            'latest_article_date' => Article::max('published_at'),
+            'oldest_article_date' => Article::min('published_at'),
+            'articles_today' => Article::whereDate('created_at', today())->count(),
+            'date_range_coverage' => [
+                'from' => Article::min('published_at'),
+                'to' => Article::max('published_at'),
                 'total_days' => Article::selectRaw('DATEDIFF(MAX(published_at), MIN(published_at)) as days')->value('days'),
             ],
         ];
     }
 
+    /**
+     * Reset fetch tracker (for testing)
+     */
+    public function resetFetchTracker(): void
+    {
+        self::$fetchedUrls = [];
+    }
+
+    /**
+     * Test API connection
+     */
     public function testConnection(): array
     {
         try {
             $response = Http::timeout(30)
-                ->withOptions(['verify' => true, 'connect_timeout' => 15])
+                ->withOptions([
+                    'verify' => true,
+                    'connect_timeout' => 15,
+                ])
                 ->get($this->apiUrl, [
                     'access_key' => $this->apiKey,
-                    'limit'      => 1,
+                    'limit' => 1,
                 ]);
 
             if ($response->successful()) {
+                $data = $response->json();
                 return [
                     'success' => true,
-                    'status'  => 'connected',
+                    'status' => 'connected',
                     'message' => 'API connection successful',
-                    'data'    => $response->json(),
+                    'data' => $data,
                 ];
             }
 
             return [
                 'success' => false,
-                'status'  => 'failed',
+                'status' => 'failed',
                 'message' => "API returned status: {$response->status()}",
             ];
 
         } catch (Exception $e) {
             return [
                 'success' => false,
-                'status'  => 'error',
+                'status' => 'error',
                 'message' => $e->getMessage(),
             ];
         }
