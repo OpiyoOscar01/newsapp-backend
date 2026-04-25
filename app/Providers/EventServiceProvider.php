@@ -4,7 +4,7 @@
 namespace App\Providers;
 
 use App\Events\PasswordResetRequested;
-use App\Listeners\Auth\SendPasswordResetNotification;
+use App\Listeners\SendPasswordResetNotification;
 use Illuminate\Foundation\Support\Providers\EventServiceProvider as ServiceProvider;
 
 class EventServiceProvider extends ServiceProvider
