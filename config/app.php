@@ -19,7 +19,7 @@ return [
     /**
      * Application frontend client.
      */
-    'frontend_url' => env('FRONTEND_URL', 'http://localhost:5173'),
+    'frontend_url' => env('FRONTEND_URL', 'https://www.definepress.com/'),
     'support_email' => env('SUPPORT_EMAIL', 'info@definepress.com'),
     'support_phone' => env('SUPPORT_PHONE', '+256 708 807664'),
 
