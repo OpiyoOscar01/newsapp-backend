@@ -27,6 +27,8 @@ class MediaStackService
     // Cache key prefix for offset bookmarks
     private const OFFSET_CACHE_PREFIX = 'mediastack_offset_';
     private const OFFSET_TTL = 86400; // 24 hours
+    private const MAX_OFFSET = 500;   // Cap at 5 pages of 100 — beyond this,
+                                      // reset to 0 so new articles get picked up.
 
     public function __construct()
     {
@@ -49,7 +51,9 @@ class MediaStackService
      */
     private function offsetCacheKey(array $params): string
     {
-        $filterKeys = ['categories', 'countries', 'languages', 'sources', 'keywords', 'sort', 'date'];
+        // 'date' is excluded because applyDeduplicationParams auto-injects it,
+        // making the key change daily and rendering offset bookmarks useless.
+        $filterKeys = ['categories', 'countries', 'languages', 'sources', 'keywords', 'sort'];
         $fingerprint = [];
 
         foreach ($filterKeys as $key) {
@@ -148,10 +152,12 @@ class MediaStackService
             // ── Advance offset bookmark ─────────────────────────────────────
             // If we got a full page, advance. If fewer than $limit came back
             // we've reached the end — reset to 0 so the next run starts fresh.
+            // Cap at MAX_OFFSET so the pointer wraps around and picks up new
+            // articles instead of crawling endlessly into old data.
             $apiTotal   = (int) ($data['pagination']['total'] ?? 0);
             $nextOffset = $offset + $totalArticles;
 
-            if ($totalArticles < $limit || ($apiTotal > 0 && $nextOffset >= $apiTotal)) {
+            if ($totalArticles < $limit || ($apiTotal > 0 && $nextOffset >= $apiTotal) || $nextOffset >= self::MAX_OFFSET) {
                 Cache::put($cacheKey, 0, self::OFFSET_TTL); // reset for next run
             } else {
                 Cache::put($cacheKey, $nextOffset, self::OFFSET_TTL);
@@ -241,10 +247,16 @@ class MediaStackService
             return $params;
         }
 
-        // Get the latest published date from existing articles
-        $latestArticle = Article::whereNotNull('published_at')
-            ->orderBy('published_at', 'desc')
-            ->first();
+        // Get the latest published date from existing articles,
+        // scoped to the specific category if one is being fetched.
+        $query = Article::whereNotNull('published_at');
+
+        if (isset($params['categories'])) {
+            $categories = explode(',', $params['categories']);
+            $query->whereIn('category', $categories);
+        }
+
+        $latestArticle = $query->orderBy('published_at', 'desc')->first();
 
         if ($latestArticle) {
             // Get just the date part in YYYY-MM-DD format
@@ -254,6 +266,7 @@ class MediaStackService
             $params['date'] = $latestDate;
             
             Log::info('Auto-applying date filter to avoid duplicates', [
+                'categories' => $params['categories'] ?? 'all',
                 'date_from' => $params['date']
             ]);
         } else {

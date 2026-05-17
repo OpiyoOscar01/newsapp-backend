@@ -2,6 +2,7 @@
 
 namespace Database\Seeders;
 
+use App\Models\Article;
 use App\Models\User;
 use Illuminate\Database\Seeder;
 use Illuminate\Support\Facades\Hash;
@@ -100,31 +101,72 @@ class DatabaseSeeder extends Seeder
         $this->command->info("=================================\n");
         
         // ============================================
-        // STEP 4: MAKE API CALLS
+        // STEP 4: FETCH ARTICLES PER CATEGORY
         // ============================================
-        $this->command->info("\nMaking API calls to fetch endpoint...\n");
+        $this->command->info("\nFetching articles per category (target: 50 per category)...\n");
         
-        for ($i = 1; $i <= 5; $i++) {
-            $this->command->info("API Call #{$i}");
+        $categories = ['general', 'business', 'entertainment', 'health', 'science', 'sports', 'technology'];
+        $targetPerCategory = 50;
+        $maxPagesPerCategory = 10;
+        
+        foreach ($categories as $category) {
+            $currentCount = Article::where('category', $category)->count();
+            $needed = max(0, $targetPerCategory - $currentCount);
             
-            try {
-                $response = Http::withToken($systemToken)
-                    ->timeout(30)
-                    ->post(config('app.url') . '/api/v1/mediastack/fetch');
-                
-                if ($response->successful()) {
-                    $this->command->info("✓ Success: " . json_encode($response->json()));
-                } else {
-                    $this->command->error("✗ Failed with status: " . $response->status());
-                    $this->command->error("Response: " . $response->body());
-                }
-            } catch (\Exception $e) {
-                $this->command->error("✗ Exception: " . $e->getMessage());
+            if ($needed <= 0) {
+                $this->command->info("✓ {$category}: already has {$currentCount} articles, skipping");
+                continue;
             }
             
-            $this->command->info("");
+            $this->command->info("→ {$category}: needs {$needed} more (has {$currentCount})");
+            
+            $pagesFetched = 0;
+            $totalFetched = 0;
+            
+            while ($totalFetched < $needed && $pagesFetched < $maxPagesPerCategory) {
+                $offset = $pagesFetched * 100;
+                $pagesFetched++;
+                
+                try {
+                    $response = Http::withToken($systemToken)
+                        ->timeout(30)
+                        ->post(config('app.url') . '/api/v1/mediastack/fetch', [
+                            'categories' => $category,
+                            'limit' => 100,
+                            'offset' => $offset,
+                            'force_refresh' => true,
+                        ]);
+                    
+                    if ($response->successful()) {
+                        $result = $response->json()['data'] ?? [];
+                        $articlesInBatch = $result['articles_processed'] ?? 0;
+                        $totalFetched += $articlesInBatch;
+                        
+                        $this->command->info("  Page {$pagesFetched} (offset {$offset}): +{$articlesInBatch} articles");
+                    } else {
+                        $this->command->warn("  Page {$pagesFetched}: API error — " . $response->body());
+                    }
+                } catch (\Exception $e) {
+                    $this->command->error("  Page {$pagesFetched}: Exception — " . $e->getMessage());
+                }
+            }
+            
+            $finalCount = Article::where('category', $category)->count();
+            $this->command->info("  → {$category} now has {$finalCount} articles\n");
         }
         
+        // ============================================
+        // STEP 5: SUMMARY
+        // ============================================
+        $this->command->info("\n========== FINAL ARTICLE COUNTS ==========");
+        
+        foreach ($categories as $category) {
+            $count = Article::where('category', $category)->count();
+            $status = $count >= $targetPerCategory ? '✓' : '✗';
+            $this->command->info("{$status} {$category}: {$count} articles");
+        }
+        
+        $this->command->info("===========================================\n");
         $this->command->info("✅ Database seeding completed successfully!");
     }
 }
